@@ -1053,14 +1053,14 @@ export default function Page() {
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
         <div className="mx-auto mb-5 flex max-w-[1880px] flex-wrap items-start justify-between gap-4">
           <h1 className="my-2 font-[Georgia] text-5xl leading-none md:text-7xl">Rat Race Golf</h1>
-          <div className="grid justify-items-end gap-2">
-            <div className="flex flex-wrap justify-end gap-2 text-xs">
-              <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
-              <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
-              {profile?.team_name ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile.team_name}</span> : null}
+            <div className="grid justify-items-end gap-2">
+              <div className="flex flex-wrap justify-end gap-2 text-xs">
+                <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
+                <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (profile?.team_name ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile.team_name}</span> : null)}
+              </div>
+              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
             </div>
-            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
-          </div>
         </div>
 
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
@@ -1106,9 +1106,8 @@ export default function Page() {
 
             {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
               <div className="grid gap-5">
-                  <div className="flex flex-wrap gap-3">
-                    {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button> : null}
-                    {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : null}
+                <div className="flex flex-wrap gap-3">
+                  {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button> : null}
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                 </div>
