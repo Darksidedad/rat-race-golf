@@ -124,6 +124,7 @@ export default function Page() {
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [authChecked, setAuthChecked] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [currentSession, setCurrentSession] = useState<DraftSession | null>(null);
@@ -140,7 +141,10 @@ export default function Page() {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authUsername, setAuthUsername] = useState("");
-  const [authTeamName, setAuthTeamName] = useState(DEFAULT_TEAM_NAMES[0]);
+  const [authTeamName, setAuthTeamName] = useState("");
+  const [passwordResetMode, setPasswordResetMode] = useState(false);
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState("");
   const [statusMessage, setStatusMessage] = useState("Loading league data...");
   const [busy, setBusy] = useState("");
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
@@ -157,6 +161,9 @@ export default function Page() {
 
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (_event === "PASSWORD_RECOVERY") {
+        setPasswordResetMode(true);
+      }
       setUser(nextSession?.user ?? null);
       setAuthChecked(true);
     });
@@ -170,6 +177,7 @@ export default function Page() {
     if (!authChecked) return;
     if (!user) {
       setProfile(null);
+      setProfiles([]);
       setSessions([]);
       setCurrentSession(null);
       setTeams([]);
@@ -220,6 +228,21 @@ export default function Page() {
       setActiveRoomTab("draft");
     }
   }, [activeRoomTab, profile]);
+
+  useEffect(() => {
+    if (profile?.role !== "commissioner") {
+      setProfiles([]);
+      return;
+    }
+    loadProfiles();
+  }, [profile?.role]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.location.hash.includes("type=recovery") || window.location.search.includes("type=recovery")) {
+      setPasswordResetMode(true);
+    }
+  }, []);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -313,6 +336,17 @@ export default function Page() {
     setProfile((data as Profile | null) ?? null);
   }
 
+  async function loadProfiles() {
+    const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: true });
+    if (error) {
+      console.error(error);
+      setStatusMessage("Could not load signed-up league members.");
+      return;
+    }
+
+    setProfiles((data ?? []) as Profile[]);
+  }
+
   async function signIn() {
     if (!authEmail.trim() || !authPassword) {
       setStatusMessage("Enter your email and password to sign in.");
@@ -344,10 +378,6 @@ export default function Page() {
       setStatusMessage("Enter your email and password before creating your account.");
       return;
     }
-    if (!authTeamName.trim()) {
-      setStatusMessage("Choose your team before creating your account.");
-      return;
-    }
 
     setBusy("Creating account...");
     const { error } = await supabase.auth.signUp({
@@ -356,7 +386,7 @@ export default function Page() {
       options: {
         data: {
           username: authUsername.trim(),
-          team_name: authTeamName.trim(),
+          team_name: authTeamName.trim() || null,
         },
       },
     });
@@ -369,6 +399,70 @@ export default function Page() {
     }
 
     setStatusMessage("Account created. If your project requires email confirmation, verify your email and then sign in.");
+  }
+
+  async function sendPasswordReset() {
+    if (!authEmail.trim()) {
+      setStatusMessage("Enter your email address first so we know where to send the reset link.");
+      return;
+    }
+
+    setBusy("Sending reset email...");
+    const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
+      redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+    });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not send the password reset email.");
+      return;
+    }
+
+    setStatusMessage("Password reset email sent. Open the link in that email and set your new password.");
+  }
+
+  async function finishPasswordReset() {
+    if (!recoveryPassword || !recoveryPasswordConfirm) {
+      setStatusMessage("Enter your new password twice.");
+      return;
+    }
+    if (recoveryPassword !== recoveryPasswordConfirm) {
+      setStatusMessage("Those passwords do not match.");
+      return;
+    }
+
+    setBusy("Updating password...");
+    const { error } = await supabase.auth.updateUser({ password: recoveryPassword });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not update your password.");
+      return;
+    }
+
+    setRecoveryPassword("");
+    setRecoveryPasswordConfirm("");
+    setPasswordResetMode(false);
+    setStatusMessage("Password updated. You can use your new password now.");
+  }
+
+  async function assignTeamOwner(team: DraftTeam, ownerUserId: string) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can assign teams.");
+      return;
+    }
+
+    const ownerId = ownerUserId || null;
+    const selectedProfile = profiles.find((entry) => entry.id === ownerId) ?? null;
+    const nextTeamName = selectedProfile?.team_name?.trim() || team.name;
+    await updateTeam(
+      team.id,
+      { owner_user_id: ownerId, name: nextTeamName },
+      ownerId ? `Assigned ${team.name} to ${selectedProfile?.username ?? "that member"}.` : `Removed the owner for ${team.name}.`
+    );
+    if (currentSession) await loadSession(currentSession.id, false);
   }
 
   async function signOut() {
@@ -876,6 +970,31 @@ export default function Page() {
     setStatusMessage(`Choose a replacement for ${pick.player_name} on ${teamName}.`);
   }
 
+  if (passwordResetMode) {
+    return (
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
+          <div className="grid w-full gap-5 rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+            <div>
+              <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+              <p className="mb-0 mt-4 text-[#617061]">Set your new password below, then jump back into the league.</p>
+            </div>
+            <div className="grid gap-3">
+              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={recoveryPassword} onChange={(event) => setRecoveryPassword(event.target.value)} placeholder="New password" />
+              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={recoveryPasswordConfirm} onChange={(event) => setRecoveryPasswordConfirm(event.target.value)} placeholder="Confirm new password" />
+              <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={finishPasswordReset}>
+                {busy === "Updating password..." ? busy : "Save New Password"}
+              </button>
+            </div>
+            <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+              {busy || statusMessage}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!authChecked) {
     return (
       <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
@@ -910,9 +1029,7 @@ export default function Page() {
               {authMode === "sign_up" ? (
                 <>
                   <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="Username" />
-                  <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authTeamName} onChange={(event) => setAuthTeamName(event.target.value)}>
-                    {DEFAULT_TEAM_NAMES.map((teamName) => <option key={teamName} value={teamName}>{teamName}</option>)}
-                  </select>
+                  <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authTeamName} onChange={(event) => setAuthTeamName(event.target.value)} placeholder="Team name in your league (optional)" />
                 </>
               ) : null}
               <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" />
@@ -920,6 +1037,7 @@ export default function Page() {
               <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={authMode === "sign_up" ? signUp : signIn}>
                 {busy === "Creating account..." || busy === "Signing in..." ? busy : authMode === "sign_up" ? "Create Account" : "Sign In"}
               </button>
+              {authMode === "sign_in" ? <button className="justify-self-start text-sm text-[#1a5c3a]" onClick={sendPasswordReset}>Send password reset email</button> : null}
             </div>
 
             <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
@@ -967,15 +1085,14 @@ export default function Page() {
             )}
             <div className="mt-5 grid gap-3">
               {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
-                <div key={session.id} className={`rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <button className="min-w-0 flex-1 text-left" onClick={() => setSelectedSessionId(session.id)}>
-                      <div className="flex justify-between gap-3"><strong>{session.name}</strong><span className="text-sm text-[#617061]">{statusLabel(session.status)}</span></div>
-                    </button>
-                    {canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
-                  </div>
-                  <div className="text-sm text-[#617061]">{session.event_name || "No PGA event linked yet"}</div>
-                  <div className="text-sm text-[#617061]">Saved {new Date(session.created_at).toLocaleString()}</div>
+                <div key={session.id} className={`flex items-center gap-3 rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
+                  <button className="min-w-0 flex-1 text-left" onClick={() => setSelectedSessionId(session.id)}>
+                    <div className="flex items-center justify-between gap-3">
+                      <strong className="truncate">{session.name}</strong>
+                      <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
+                    </div>
+                  </button>
+                  {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
                 </div>
               ))}
             </div>
@@ -1084,15 +1201,32 @@ export default function Page() {
 
                 {canManageLeague && activeRoomTab === "admin" ? (
                 <div className="grid gap-5">
-                  <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                    <div className="mb-4 flex items-center justify-between gap-3">
-                      <h3 className="m-0 font-[Georgia] text-xl">League Admin</h3>
-                      <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{teams.length} total teams</span>
-                    </div>
-                    <div className="grid gap-4">
-                      <div className="flex flex-wrap gap-3 rounded-2xl border border-black/10 bg-white/75 p-3">
-                        <input
-                          className="min-w-[220px] flex-1 rounded-xl border border-black/15 bg-white px-3 py-2"
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <h3 className="m-0 font-[Georgia] text-xl">League Admin</h3>
+                        <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{teams.length} total teams</span>
+                      </div>
+                      <div className="grid gap-4">
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <h4 className="m-0 font-[Georgia] text-lg">Signed-Up Members</h4>
+                            <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{profiles.length} accounts</span>
+                          </div>
+                          {!profiles.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-4 text-sm text-[#617061]">No members have created accounts yet.</div> : (
+                            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                              {profiles.map((entry) => (
+                                <div key={entry.id} className="grid gap-1 rounded-2xl border border-black/10 bg-white/90 p-3 text-sm">
+                                  <strong>{entry.username}</strong>
+                                  <span className="text-[#617061]">{entry.role === "commissioner" ? "Commissioner" : "Member"}</span>
+                                  <span className="text-[#617061]">{entry.team_name ? `Claimed team: ${entry.team_name}` : "No team claimed yet"}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-3 rounded-2xl border border-black/10 bg-white/75 p-3">
+                          <input
+                            className="min-w-[220px] flex-1 rounded-xl border border-black/15 bg-white px-3 py-2"
                           value={newTeamName}
                           onChange={(event) => setNewTeamName(event.target.value)}
                           placeholder="Add a new team name"
@@ -1101,15 +1235,19 @@ export default function Page() {
                           Add Team
                         </button>
                       </div>
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        {teams.map((team) => (
-                          <div key={team.id} className="grid gap-2 rounded-2xl border border-black/10 bg-white/80 p-3 shadow-sm">
-                            <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
-                            <div className="flex items-center justify-between gap-3 text-sm">
-                              <span className="text-[#617061]">{team.draft_slot ? `Currently pick ${team.draft_slot}` : "Not in this week's draft"}</span>
-                              {team.draft_slot === null ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => deleteTeam(team)}>Delete</button> : null}
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {teams.map((team) => (
+                            <div key={team.id} className="grid gap-2 rounded-2xl border border-black/10 bg-white/80 p-3 shadow-sm">
+                              <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
+                              <select className="w-full rounded-xl border border-black/15 bg-white px-3 py-2" value={team.owner_user_id ?? ""} onChange={(event) => assignTeamOwner(team, event.target.value)}>
+                                <option value="">No owner assigned</option>
+                                {profiles.map((entry) => <option key={entry.id} value={entry.id}>{entry.username}{entry.team_name ? ` (${entry.team_name})` : ""}</option>)}
+                              </select>
+                              <div className="flex items-center justify-between gap-3 text-sm">
+                                <span className="text-[#617061]">{team.draft_slot ? `Currently pick ${team.draft_slot}` : "Not in this week's draft"}{team.owner_user_id ? " · Owner assigned" : ""}</span>
+                                {team.draft_slot === null ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => deleteTeam(team)}>Delete</button> : null}
+                              </div>
                             </div>
-                          </div>
                         ))}
                       </div>
                     </div>
