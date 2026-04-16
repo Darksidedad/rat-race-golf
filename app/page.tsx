@@ -829,17 +829,22 @@ export default function Page() {
                 <div className="grid gap-5">
                   <div className="rounded-[2rem] border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-4 text-white shadow-[0_18px_45px_rgba(74,57,28,0.15)]">
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                          <div className="grid gap-2">
-                            <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
-                            <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
-                              <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
-                              <span className="rounded-full bg-white/12 px-3 py-1">Last updated: {resultsUpdatedLabel}</span>
+                            <div className="grid gap-2">
+                              <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
+                              <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
+                                <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
+                                <span className="rounded-full bg-white/12 px-3 py-1">Last updated: {resultsUpdatedLabel}</span>
+                              </div>
+                            </div>
+                            <div className="grid gap-2 justify-items-start">
+                              <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                              </button>
+                              <div className="rounded-full bg-white/12 px-3 py-1 text-xs text-white/85">
+                                {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
+                              </div>
                             </div>
                           </div>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <button className="rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm text-white" onClick={pullLeaderboard}>Refresh Leaderboard</button>
-                          </div>
-                        </div>
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                           {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
                           <div key={entry.team.id} className={`grid gap-2 rounded-[1.6rem] p-3 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.14)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
