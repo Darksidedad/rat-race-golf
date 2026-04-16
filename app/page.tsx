@@ -1083,16 +1083,16 @@ export default function Page() {
                 Open any tournament below to watch the live draft, make your pick when your team is on the clock, and review final leaderboards.
               </div>
             )}
-            <div className="mt-5 grid gap-3">
-              {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
-                <div key={session.id} className={`flex items-center gap-3 rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
-                  <button className="min-w-0 flex-1 text-left" onClick={() => setSelectedSessionId(session.id)}>
-                    <div className="flex items-center justify-between gap-3">
-                      <strong className="truncate">{session.name}</strong>
-                      <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
-                    </div>
-                  </button>
-                  {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
+              <div className="mt-5 grid gap-3">
+                {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
+                <div key={session.id} className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
+                  <button className="min-w-0 text-left" onClick={() => setSelectedSessionId(session.id)}>
+                      <div className="flex items-center justify-between gap-3">
+                        <strong className="truncate">{session.name}</strong>
+                        <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
+                      </div>
+                    </button>
+                  {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2.5 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
                 </div>
               ))}
             </div>
@@ -1115,7 +1115,7 @@ export default function Page() {
                 {canManageLeague && activeRoomTab === "setup" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                    <h3 className="mb-4 mt-0 font-[Georgia] text-xl">League Setup</h3>
+                    <h3 className="mb-4 mt-0 font-[Georgia] text-xl">Tournament Setup</h3>
                     <div className="grid gap-3">
                         <div className="mb-1 flex items-center justify-between gap-3">
                           <h3 className="m-0 font-[Georgia] text-xl">Teams And Draft Order</h3>
@@ -1126,13 +1126,13 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="grid items-start gap-4 xl:grid-cols-[minmax(320px,0.9fr)_minmax(360px,1.1fr)]">
-                          <div className="grid min-h-[430px] gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <h4 className="m-0 font-[Georgia] text-lg">Available Teams</h4>
-                              <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{unassignedTeams.length} left</span>
-                            </div>
-                            <div className="grid content-start gap-2 sm:grid-cols-2">
-                              {!unassignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-4 text-sm text-[#617061]">Every team has been assigned to the draft order.</div> : unassignedTeams.map((team) => (
+                            <div className="grid min-h-[430px] gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <h4 className="m-0 font-[Georgia] text-lg">Available Teams</h4>
+                                <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{unassignedTeams.length} left</span>
+                              </div>
+                            <div className="grid max-h-[420px] content-start gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
+                              {!unassignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-[#617061]">Every team has been assigned to the draft order.</div> : unassignedTeams.map((team) => (
                                 <div key={team.id} className="grid min-h-[56px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/90 px-3 py-2.5">
                                   <span className="truncate font-medium">{team.name}</span>
                                   <button className="w-[74px] rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white" onClick={() => assignNextPick(team)}>Assign</button>
