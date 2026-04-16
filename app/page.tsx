@@ -15,6 +15,7 @@ type DraftSession = {
   current_positions: Record<string, number | null> | null;
   status: string;
   created_at: string;
+  updated_at: string;
 };
 type DraftTeam = { id: string; session_id: string; name: string; draft_slot: number | null; active: boolean; created_at: string };
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
@@ -203,6 +204,10 @@ export default function Page() {
       return { team, playerScores, total, countingKeys };
     }).sort((a, b) => b.total - a.total);
   }, [assignedTeams, currentSession?.current_positions, picks]);
+  const resultsUpdatedLabel = useMemo(() => {
+    if (!currentSession?.updated_at) return "Not updated yet";
+    return new Date(currentSession.updated_at).toLocaleString();
+  }, [currentSession?.updated_at]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -823,12 +828,20 @@ export default function Page() {
                 {activeRoomTab === "results" ? (
                 <div className="grid gap-5">
                   <div className="rounded-[2rem] border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-4 text-white shadow-[0_18px_45px_rgba(74,57,28,0.15)]">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
-                        <div className="rounded-full bg-white/12 px-3 py-1 text-sm text-white/85">{leaderboard.length} teams</div>
-                      </div>
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                        {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                          <div className="grid gap-2">
+                            <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
+                            <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
+                              <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
+                              <span className="rounded-full bg-white/12 px-3 py-1">Last updated: {resultsUpdatedLabel}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <button className="rounded-full border border-white/20 bg-white/10 px-4 py-2 text-sm text-white" onClick={pullLeaderboard}>Refresh Leaderboard</button>
+                          </div>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                          {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
                           <div key={entry.team.id} className={`grid gap-2 rounded-[1.6rem] p-3 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.14)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
                             <div className="flex items-start justify-between gap-3">
                               <div>
