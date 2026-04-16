@@ -952,14 +952,14 @@ export default function Page() {
                                   <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
                                 </div>
                               </div>
-                              <div className="grid gap-2 justify-items-start">
-                                <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
-                                {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                </button>
-                                <div className="text-xs text-white/85">
+                                <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
+                                  <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                  {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                                  </button>
+                                <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   Last updated: {resultsUpdatedLabel}
                                 </div>
-                                <div className="rounded-full bg-white/12 px-3 py-1 text-xs text-white/85">
+                                <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
                                 </div>
                               </div>
