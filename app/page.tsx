@@ -22,6 +22,7 @@ type DraftPick = { id: string; session_id: string; team_id: string; player_name:
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; error?: string };
+type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
   type RoomTab = "setup" | "admin" | "draft" | "results";
 type EditingPick = {
   id: string;
@@ -134,6 +135,8 @@ export default function Page() {
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
   const [editingPick, setEditingPick] = useState<EditingPick | null>(null);
   const [highlightedPlayerIndex, setHighlightedPlayerIndex] = useState(0);
+  const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
+  const [oddsSource, setOddsSource] = useState("");
   const deferredFilter = useDeferredValue(playerFilter);
 
   useEffect(() => {
@@ -162,12 +165,29 @@ export default function Page() {
     setManualLeaderboardDraft(currentSession?.manual_leaderboard_input ?? "");
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
+  useEffect(() => {
+    if (!currentSession?.event_name) {
+      setOddsByPlayer({});
+      setOddsSource("");
+      return;
+    }
+    loadOdds(currentSession.event_name);
+  }, [currentSession?.event_name]);
+
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
   const currentTeamOnClock = useMemo(() => (validDraftOrder ? getCurrentTeamOnClock(teams, picks) : null), [teams, picks, validDraftOrder]);
   const draftedKeys = useMemo(() => new Set(picks.map((pick) => pick.player_key)), [picks]);
   const allPlayers = useMemo(() => sanitizePlayerNames(playerPoolDraft.split("\n")), [playerPoolDraft]);
-  const availablePlayers = useMemo(() => allPlayers.filter((player) => !draftedKeys.has(normalizeName(player))).filter((player) => player.toLowerCase().includes(deferredFilter.toLowerCase())), [allPlayers, draftedKeys, deferredFilter]);
+  const availablePlayers = useMemo(() => allPlayers
+    .filter((player) => !draftedKeys.has(normalizeName(player)))
+    .filter((player) => player.toLowerCase().includes(deferredFilter.toLowerCase()))
+    .sort((a, b) => {
+      const aOdds = oddsByPlayer[normalizeName(a)] ?? Number.POSITIVE_INFINITY;
+      const bOdds = oddsByPlayer[normalizeName(b)] ?? Number.POSITIVE_INFINITY;
+      if (aOdds !== bOdds) return aOdds - bOdds;
+      return a.localeCompare(b);
+    }), [allPlayers, draftedKeys, deferredFilter, oddsByPlayer]);
   const unassignedTeams = useMemo(() => teams.filter((team) => team.draft_slot === null).sort((a, b) => a.name.localeCompare(b.name)), [teams]);
   const totalPicks = assignedTeams.length * ROUNDS;
   const draftComplete = totalPicks > 0 && picks.length >= totalPicks;
@@ -259,6 +279,24 @@ export default function Page() {
     }
   }
 
+  async function loadOdds(eventName: string) {
+    try {
+      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}`);
+      const payload: EspnOddsResponse = await response.json();
+      if (!payload.ok || !payload.odds) {
+        setOddsByPlayer({});
+        setOddsSource("");
+        return;
+      }
+      setOddsByPlayer(payload.odds);
+      setOddsSource(payload.source ?? "");
+    } catch (error) {
+      console.error(error);
+      setOddsByPlayer({});
+      setOddsSource("");
+    }
+  }
+
   async function updateSession(patch: Partial<DraftSession>, message: string) {
     if (!currentSession) return false;
     const { error } = await supabase.from("draft_sessions").update(patch).eq("id", currentSession.id);
@@ -340,6 +378,22 @@ export default function Page() {
     setBusy("");
     setStatusMessage(`Deleted team "${team.name}".`);
     await loadSession(selectedSessionId, false);
+  }
+
+  async function deleteSession(session: DraftSession) {
+    if (!window.confirm(`Delete "${session.name}"? This removes the session, draft order, picks, and saved scoring.`)) return;
+    setBusy("Deleting session...");
+    const { error } = await supabase.from("draft_sessions").delete().eq("id", session.id);
+    if (error) {
+      console.error(error);
+      setBusy("");
+      setStatusMessage("Could not delete that session.");
+      return;
+    }
+    setSelectedSessionId((current) => current === session.id ? "" : current);
+    setBusy("");
+    setStatusMessage(`Deleted session "${session.name}".`);
+    await loadSessions();
   }
 
   async function createSession() {
@@ -450,6 +504,59 @@ export default function Page() {
       console.error(error);
       setStatusMessage("Could not update leaderboard results from ESPN.");
     }
+    setBusy("");
+  }
+
+  async function autoDraftRandomly() {
+    if (!currentSession || !validDraftOrder || draftComplete) return;
+    if (!availablePlayers.length) {
+      setStatusMessage("There are no available golfers left to auto-draft.");
+      return;
+    }
+
+    const remainingPicks = totalPicks - picks.length;
+    if (availablePlayers.length < remainingPicks) {
+      setStatusMessage("There are not enough available golfers to finish the draft.");
+      return;
+    }
+
+    const randomPool = [...availablePlayers];
+    for (let index = randomPool.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [randomPool[index], randomPool[swapIndex]] = [randomPool[swapIndex], randomPool[index]];
+    }
+
+    setBusy("Random drafting...");
+    const generatedPicks: Omit<DraftPick, "id" | "created_at">[] = [];
+    for (let offset = 0; offset < remainingPicks; offset += 1) {
+      const overallIndex = picks.length + offset;
+      const roundNumber = Math.floor(overallIndex / assignedTeams.length) + 1;
+      const roundIndex = overallIndex % assignedTeams.length;
+      const team = roundNumber % 2 === 1 ? assignedTeams[roundIndex] : assignedTeams[assignedTeams.length - 1 - roundIndex];
+      const playerName = randomPool[offset];
+      generatedPicks.push({
+        session_id: currentSession.id,
+        team_id: team.id,
+        player_name: playerName,
+        player_key: normalizeName(playerName),
+        pick_number: overallIndex + 1,
+        round_number: roundNumber,
+      });
+    }
+
+    const { error } = await supabase.from("draft_picks").insert(generatedPicks);
+    if (error) {
+      console.error(error);
+      setBusy("");
+      setStatusMessage("Could not complete the random draft.");
+      return;
+    }
+
+    const completed = picks.length + generatedPicks.length >= totalPicks;
+    await updateSession({ status: completed ? "draft_complete" : "drafting" }, `Randomly drafted ${generatedPicks.length} golfers.`);
+    if (completed) setActiveRoomTab("results");
+    setPlayerFilter("");
+    setHighlightedPlayerIndex(0);
     setBusy("");
   }
 
@@ -593,15 +700,20 @@ export default function Page() {
             </select>
             <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
           </div>
-          <div className="mt-5 grid gap-3">
-            {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
-              <button key={session.id} className={`rounded-2xl border px-4 py-3 text-left ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`} onClick={() => setSelectedSessionId(session.id)}>
-                <div className="flex justify-between gap-3"><strong>{session.name}</strong><span className="text-sm text-[#617061]">{statusLabel(session.status)}</span></div>
-                <div className="text-sm text-[#617061]">{session.event_name || "No PGA event linked yet"}</div>
-                <div className="text-sm text-[#617061]">Saved {new Date(session.created_at).toLocaleString()}</div>
-              </button>
-            ))}
-          </div>
+            <div className="mt-5 grid gap-3">
+              {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
+                <div key={session.id} className={`rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <button className="min-w-0 flex-1 text-left" onClick={() => setSelectedSessionId(session.id)}>
+                      <div className="flex justify-between gap-3"><strong>{session.name}</strong><span className="text-sm text-[#617061]">{statusLabel(session.status)}</span></div>
+                    </button>
+                    <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button>
+                  </div>
+                  <div className="text-sm text-[#617061]">{session.event_name || "No PGA event linked yet"}</div>
+                  <div className="text-sm text-[#617061]">Saved {new Date(session.created_at).toLocaleString()}</div>
+                </div>
+              ))}
+            </div>
         </section>
 
         <section className="rounded-3xl border border-white/80 bg-white/80 p-5 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
@@ -620,49 +732,18 @@ export default function Page() {
                 </div>
 
                 {activeRoomTab === "setup" ? (
-                <div className="grid gap-5">
-                  <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                  <h3 className="mb-4 mt-0 font-[Georgia] text-xl">League Setup</h3>
-                  <div className="grid gap-3">
-                    <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
-                      <option value="">No event selected</option>
-                      {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
-                    </select>
-                    <div className="flex flex-wrap gap-3">
-                      <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={importFieldFromEspn}>Import ESPN Field</button>
-                      <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={savePlayerPool}>Save Player Pool</button>
-                      </div>
-                      <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder="One golfer per line" />
-                      <div className="my-1 h-px bg-black/10" />
-                      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(420px,1.15fr)]">
-                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <h3 className="m-0 font-[Georgia] text-xl">Scoring</h3>
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#6a5940]">Best 3 of 4 count</span>
+                  <div className="grid gap-5">
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                    <h3 className="mb-4 mt-0 font-[Georgia] text-xl">League Setup</h3>
+                    <div className="grid gap-3">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <h3 className="m-0 font-[Georgia] text-xl">Teams And Draft Order</h3>
+                          <div className="flex items-center gap-2">
+                            {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
+                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{assignedTeams.length} active</span>
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={clearDraftOrder}>Clear Order</button>
                           </div>
-                          <div className="flex flex-wrap gap-3">
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={pullLeaderboard}>Pull ESPN Leaderboard</button>
-                            <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={applyManualScores}>Apply Manual Scores</button>
-                          </div>
-                          <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-3 py-2 text-sm text-[#617061]">
-                            {busy || statusMessage}
-                          </div>
-                          <div className="text-sm text-[#617061]">Use this area to load or correct tournament positions before everyone watches the live standings.</div>
                         </div>
-                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
-                          <textarea className="min-h-52 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={manualLeaderboardDraft} onChange={(event) => setManualLeaderboardDraft(event.target.value)} placeholder={"Example:\n1 Scottie Scheffler\nT2 Rory McIlroy\nCUT Jordan Spieth"} />
-                          <div className="text-sm text-[#617061]">Enter one player per line. Examples: `1 Scottie Scheffler`, `T2 Rory McIlroy`, `CUT Jordan Spieth`.</div>
-                        </div>
-                      </div>
-                      <div className="my-1 h-px bg-black/10" />
-                      <div className="mb-1 flex items-center justify-between gap-3">
-                        <h3 className="m-0 font-[Georgia] text-xl">Teams And Draft Order</h3>
-                        <div className="flex items-center gap-2">
-                          {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
-                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{assignedTeams.length} active</span>
-                          <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={clearDraftOrder}>Clear Order</button>
-                        </div>
-                      </div>
                         <div className="grid items-start gap-4 xl:grid-cols-[minmax(320px,0.9fr)_minmax(360px,1.1fr)]">
                           <div className="grid min-h-[430px] gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
                             <div className="flex items-center justify-between gap-3">
@@ -689,20 +770,51 @@ export default function Page() {
                                   <div className="flex items-center justify-between gap-3">
                                     <strong className="truncate">#{team.draft_slot} {team.name}</strong>
                                     <span className="text-xs text-[#617061]">Pick {team.draft_slot}</span>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === 1} onClick={() => moveTeam(team, "up")}>Up</button>
+                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === assignedTeams.length} onClick={() => moveTeam(team, "down")}>Down</button>
+                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={() => removeFromOrder(team)}>Remove</button>
+                                  </div>
                                 </div>
-                                <div className="flex flex-wrap gap-2">
-                                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === 1} onClick={() => moveTeam(team, "up")}>Up</button>
-                                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === assignedTeams.length} onClick={() => moveTeam(team, "down")}>Down</button>
-                                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={() => removeFromOrder(team)}>Remove</button>
-                                </div>
-                              </div>
-                            ))}
+                              ))}
+                            </div>
                           </div>
                         </div>
+                        <div className="my-1 h-px bg-black/10" />
+                        <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
+                          <option value="">No event selected</option>
+                          {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
+                        </select>
+                    <div className="flex flex-wrap gap-3">
+                      <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={importFieldFromEspn}>Import ESPN Field</button>
+                      <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={savePlayerPool}>Save Player Pool</button>
+                      </div>
+                      <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder="One golfer per line" />
+                      <div className="my-1 h-px bg-black/10" />
+                      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(420px,1.15fr)]">
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <h3 className="m-0 font-[Georgia] text-xl">Scoring</h3>
+                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#6a5940]">Best 3 of 4 count</span>
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={pullLeaderboard}>Pull ESPN Leaderboard</button>
+                            <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={applyManualScores}>Apply Manual Scores</button>
+                          </div>
+                          <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-3 py-2 text-sm text-[#617061]">
+                            {busy || statusMessage}
+                          </div>
+                          <div className="text-sm text-[#617061]">Use this area to load or correct tournament positions before everyone watches the live standings.</div>
+                        </div>
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                          <textarea className="min-h-52 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={manualLeaderboardDraft} onChange={(event) => setManualLeaderboardDraft(event.target.value)} placeholder={"Example:\n1 Scottie Scheffler\nT2 Rory McIlroy\nCUT Jordan Spieth"} />
+                          <div className="text-sm text-[#617061]">Enter one player per line. Examples: `1 Scottie Scheffler`, `T2 Rory McIlroy`, `CUT Jordan Spieth`.</div>
+                        </div>
+                      </div>
                       </div>
                     </div>
                   </div>
-                </div>
                 ) : null}
 
                 {activeRoomTab === "admin" ? (
@@ -764,6 +876,7 @@ export default function Page() {
                         </div>
                         <div className="flex flex-wrap gap-3">
                           {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Draft Order</button> : null}
+                        {!draftComplete && validDraftOrder ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft Remaining</button> : null}
                         <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button>
                         {editingPick ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                       </div>
@@ -773,11 +886,15 @@ export default function Page() {
                             <h3 className="m-0 font-[Georgia] text-xl">Available Golfers</h3>
                             <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
+                          {oddsSource ? <div className="text-xs text-[#617061]">Ordered by CBS Sports win odds, lowest odds first.</div> : null}
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
                           <div className="grid max-h-[420px] content-start gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
                             {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => (
                               <div key={player} className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
-                                <span className="truncate font-medium">{player}</span>
+                                <div className="min-w-0">
+                                  <div className="truncate font-medium">{player}</div>
+                                  <div className="text-[11px] text-[#617061]">{oddsByPlayer[normalizeName(player)] ? `CBS odds +${oddsByPlayer[normalizeName(player)]}` : "Odds unavailable"}</div>
+                                </div>
                                 <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? false : (!validDraftOrder || draftComplete || !currentTeamOnClock)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
                               </div>
                             ))}

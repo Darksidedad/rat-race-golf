@@ -12,11 +12,16 @@ type EspnCompetitor = {
   }>;
 };
 
+type EventOption = {
+  id: string;
+  name: string;
+};
+
 function normalizeName(name: string) {
   return name
     .toLowerCase()
     .replace(/\./g, "")
-    .replace(/['â€™]/g, "")
+    .replace(/['’]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -37,13 +42,10 @@ function normalizeGolfScore(raw: string | null | undefined) {
 }
 
 function fetchableScore(competitor: EspnCompetitor) {
-  return (
-    normalizeGolfScore(competitor.score) ??
-    normalizeGolfScore(competitor.linescores?.[0]?.displayValue ?? null)
-  );
+  return normalizeGolfScore(competitor.score) ?? normalizeGolfScore(competitor.linescores?.[0]?.displayValue ?? null);
 }
 
-function extractEvents(scoreboardJson: any) {
+function extractEventsFromScoreboard(scoreboardJson: any) {
   const events = scoreboardJson?.events;
   if (!Array.isArray(events)) return [];
 
@@ -52,7 +54,33 @@ function extractEvents(scoreboardJson: any) {
       id: String(event?.id ?? ""),
       name: String(event?.name ?? event?.shortName ?? "").trim(),
     }))
-    .filter((event: any) => event.id && event.name);
+    .filter((event: EventOption) => event.id && event.name);
+}
+
+function extractEventsFromScheduleHtml(html: string) {
+  const matches = [...html.matchAll(/leaderboard\?tournamentId=(\d+)[\s\S]{0,400}?eventAndLocation__tournamentLink">([^<]+)</g)];
+  const deduped = new Map<string, EventOption>();
+
+  for (const match of matches) {
+    const id = match[1]?.trim();
+    const name = match[2]?.trim();
+    if (!id || !name || deduped.has(id)) continue;
+    deduped.set(id, { id, name });
+  }
+
+  return Array.from(deduped.values());
+}
+
+function mergeEvents(...collections: EventOption[][]) {
+  const merged = new Map<string, EventOption>();
+
+  for (const collection of collections) {
+    for (const event of collection) {
+      if (!merged.has(event.id)) merged.set(event.id, event);
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 function extractEventById(scoreboardJson: any, eventId: string | null) {
@@ -104,6 +132,28 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
   return leaderboard;
 }
 
+function parseOddsFromArticle(articleHtml: string) {
+  const normalized = articleHtml
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&amp;/gi, "&");
+
+  const odds = new Map<string, number>();
+  const regex = /([A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){1,3})\s+\+(\d{3,6})/g;
+
+  for (const match of normalized.matchAll(regex)) {
+    const playerName = match[1].replace(/\s+/g, " ").trim();
+    const value = Number(match[2]);
+    if (!playerName || !Number.isFinite(value)) continue;
+    const key = normalizeName(playerName);
+    if (!odds.has(key)) odds.set(key, value);
+  }
+
+  return odds;
+}
+
 async function fetchJson(url: string) {
   const res = await fetch(url, {
     headers: {
@@ -120,18 +170,76 @@ async function fetchJson(url: string) {
   return res.json();
 }
 
+async function fetchText(url: string) {
+  const res = await fetch(url, {
+    headers: {
+      "user-agent": "Mozilla/5.0",
+      accept: "text/html,application/xhtml+xml",
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Fetch failed: ${res.status} ${url}`);
+  }
+
+  return res.text();
+}
+
+async function findCbsOddsArticle(eventName: string) {
+  const year = new Date().getFullYear();
+  const query = encodeURIComponent(`site:cbssports.com/golf/news ${year} ${eventName} odds picks field favorites`);
+  const searchHtml = await fetchText(`https://html.duckduckgo.com/html/?q=${query}`);
+  const urls = [...searchHtml.matchAll(/uddg=([^&"]+)/g)]
+    .map((match) => decodeURIComponent(match[1]))
+    .filter((url) => url.includes("cbssports.com/golf/news/"));
+
+  return urls[0] ?? null;
+}
+
 export async function GET(req: NextRequest) {
   const action = req.nextUrl.searchParams.get("action");
   const eventId = req.nextUrl.searchParams.get("eventId");
+  const eventNameParam = req.nextUrl.searchParams.get("eventName");
 
   try {
     const scoreboardUrl = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
     const scoreboardJson = await fetchJson(scoreboardUrl);
 
     if (action === "events") {
+      const scheduleHtml = await fetchText("https://www.espn.com/golf/schedule");
+      const events = mergeEvents(extractEventsFromScoreboard(scoreboardJson), extractEventsFromScheduleHtml(scheduleHtml));
       return NextResponse.json({
         ok: true,
-        events: extractEvents(scoreboardJson),
+        events,
+      });
+    }
+
+    if (action === "odds") {
+      if (!eventNameParam?.trim()) {
+        return NextResponse.json({
+          ok: false,
+          error: "Missing eventName for odds lookup.",
+        });
+      }
+
+      const articleUrl = await findCbsOddsArticle(eventNameParam.trim());
+      if (!articleUrl) {
+        return NextResponse.json({
+          ok: false,
+          error: "Could not find a CBS Sports odds article for that event.",
+        });
+      }
+
+      const articleHtml = await fetchText(articleUrl);
+      const oddsEntries = parseOddsFromArticle(articleHtml);
+      const odds = Object.fromEntries(oddsEntries.entries());
+
+      return NextResponse.json({
+        ok: true,
+        eventName: eventNameParam.trim(),
+        odds,
+        source: articleUrl,
       });
     }
 
@@ -166,13 +274,13 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       ok: false,
-      error: "Missing or invalid action. Use ?action=events, field, or leaderboard",
+      error: "Missing or invalid action. Use ?action=events, field, leaderboard, or odds",
     });
   } catch (err) {
     console.error(err);
     return NextResponse.json({
       ok: false,
-      error: "Could not connect to ESPN feed.",
+      error: "Could not connect to the live golf feed.",
     });
   }
 }
