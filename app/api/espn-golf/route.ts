@@ -1,95 +1,107 @@
 import { NextRequest, NextResponse } from "next/server";
 
-type PlayerEntry = {
-  name: string;
-  position: number | null;
+type EspnCompetitor = {
+  athlete?: {
+    displayName?: string;
+    fullName?: string;
+  };
+  score?: string | null;
+  linescores?: Array<{
+    displayValue?: string | null;
+    value?: number | null;
+  }>;
 };
 
 function normalizeName(name: string) {
   return name
     .toLowerCase()
     .replace(/\./g, "")
-    .replace(/['’]/g, "")
+    .replace(/['â€™]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function parsePosition(raw: any): number | null {
+function normalizeGolfScore(raw: string | null | undefined) {
   if (raw == null) return null;
 
-  const text = String(raw).toUpperCase().trim();
-
-  if (!text) return null;
+  const text = String(raw).trim().toUpperCase();
+  if (!text || text === "-") return null;
+  if (text === "E") return 0;
   if (text === "CUT" || text === "WD" || text === "DQ") return null;
 
-  const match = text.match(/(\d+)/);
+  const match = text.match(/^([+-]?)(\d+)$/);
   if (!match) return null;
 
-  const n = Number(match[1]);
-  return Number.isFinite(n) ? n : null;
+  const sign = match[1] === "-" ? -1 : 1;
+  return sign * Number(match[2]);
 }
 
-function walkForPlayers(node: any, results: PlayerEntry[] = []): PlayerEntry[] {
-  if (!node) return results;
-
-  if (Array.isArray(node)) {
-    for (const item of node) walkForPlayers(item, results);
-    return results;
-  }
-
-  if (typeof node !== "object") return results;
-
-  const possibleName =
-    node?.athlete?.displayName ??
-    node?.athlete?.fullName ??
-    node?.player?.displayName ??
-    node?.player?.fullName ??
-    node?.displayName ??
-    node?.fullName ??
-    null;
-
-  const possiblePosition =
-    node?.status?.position?.displayName ??
-    node?.status?.position ??
-    node?.position?.displayName ??
-    node?.position ??
-    node?.pos ??
-    node?.rank ??
-    null;
-
-  if (typeof possibleName === "string" && possibleName.trim()) {
-    results.push({
-      name: possibleName.trim(),
-      position: parsePosition(possiblePosition),
-    });
-  }
-
-  for (const value of Object.values(node)) {
-    if (typeof value === "object" && value !== null) {
-      walkForPlayers(value, results);
-    }
-  }
-
-  return results;
+function fetchableScore(competitor: EspnCompetitor) {
+  return (
+    normalizeGolfScore(competitor.score) ??
+    normalizeGolfScore(competitor.linescores?.[0]?.displayValue ?? null)
+  );
 }
 
-function dedupePlayers(entries: PlayerEntry[]) {
-  const map = new Map<string, PlayerEntry>();
+function extractEvents(scoreboardJson: any) {
+  const events = scoreboardJson?.events;
+  if (!Array.isArray(events)) return [];
 
-  for (const entry of entries) {
-    const key = normalizeName(entry.name);
-    if (!map.has(key)) {
-      map.set(key, entry);
-      continue;
+  return events
+    .map((event: any) => ({
+      id: String(event?.id ?? ""),
+      name: String(event?.name ?? event?.shortName ?? "").trim(),
+    }))
+    .filter((event: any) => event.id && event.name);
+}
+
+function extractEventById(scoreboardJson: any, eventId: string | null) {
+  const events = Array.isArray(scoreboardJson?.events) ? scoreboardJson.events : [];
+  if (!events.length) return null;
+  if (!eventId) return events[0] ?? null;
+  return events.find((event: any) => String(event?.id) === String(eventId)) ?? events[0] ?? null;
+}
+
+function extractCompetitors(scoreboardJson: any, eventId: string | null) {
+  const event = extractEventById(scoreboardJson, eventId);
+  const competitors = event?.competitions?.[0]?.competitors;
+  return Array.isArray(competitors) ? competitors : [];
+}
+
+function extractPlayerField(competitors: EspnCompetitor[]) {
+  return competitors
+    .map((competitor) => competitor.athlete?.displayName ?? competitor.athlete?.fullName ?? "")
+    .filter((name) => !!name.trim())
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function buildLeaderboard(competitors: EspnCompetitor[]) {
+  const rankedPlayers = competitors
+    .map((competitor) => ({
+      name: competitor.athlete?.displayName ?? competitor.athlete?.fullName ?? "",
+      score: fetchableScore(competitor),
+    }))
+    .filter((entry) => entry.name.trim());
+
+  const leaderboard: Record<string, number | null> = {};
+  let lastScore: number | null = null;
+  let lastPosition = 0;
+
+  rankedPlayers.forEach((entry, index) => {
+    if (entry.score === null) {
+      leaderboard[normalizeName(entry.name)] = null;
+      return;
     }
 
-    const existing = map.get(key)!;
-    if (existing.position == null && entry.position != null) {
-      map.set(key, entry);
+    if (lastScore === null || entry.score !== lastScore) {
+      lastPosition = index + 1;
+      lastScore = entry.score;
     }
-  }
 
-  return Array.from(map.values());
+    leaderboard[normalizeName(entry.name)] = lastPosition;
+  });
+
+  return leaderboard;
 }
 
 async function fetchJson(url: string) {
@@ -108,34 +120,12 @@ async function fetchJson(url: string) {
   return res.json();
 }
 
-function extractEvents(scoreboardJson: any) {
-  const events = scoreboardJson?.events;
-  if (!Array.isArray(events)) return [];
-
-  return events
-    .map((event: any) => ({
-      id: String(event?.id ?? ""),
-      name: String(event?.name ?? event?.shortName ?? "").trim(),
-    }))
-    .filter((event: any) => event.id && event.name);
-}
-
-function extractEventNameById(scoreboardJson: any, eventId: string | null) {
-  const events = scoreboardJson?.events;
-  if (!Array.isArray(events)) return null;
-  if (!eventId) return events[0]?.name ?? null;
-
-  const match = events.find((e: any) => String(e?.id) === String(eventId));
-  return match?.name ?? null;
-}
-
 export async function GET(req: NextRequest) {
   const action = req.nextUrl.searchParams.get("action");
   const eventId = req.nextUrl.searchParams.get("eventId");
 
   try {
-    const scoreboardUrl =
-      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
+    const scoreboardUrl = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
     const scoreboardJson = await fetchJson(scoreboardUrl);
 
     if (action === "events") {
@@ -145,72 +135,32 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const chosenEventId =
-      eventId ||
-      (Array.isArray(scoreboardJson?.events) && scoreboardJson.events[0]?.id
-        ? String(scoreboardJson.events[0].id)
-        : null);
+    const event = extractEventById(scoreboardJson, eventId);
+    const competitors = extractCompetitors(scoreboardJson, eventId);
+    const eventName = event?.name ?? undefined;
 
-    const eventName = extractEventNameById(scoreboardJson, chosenEventId) ?? undefined;
-
-    const candidateUrls = [
-      chosenEventId
-        ? `https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event=${chosenEventId}`
-        : null,
-      chosenEventId
-        ? `https://site.web.api.espn.com/apis/site/v2/sports/golf/leaderboard?league=pga&event=${chosenEventId}`
-        : null,
-      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard",
-    ].filter(Boolean) as string[];
-
-    let leaderboardJson: any = null;
-    let usedUrl = "";
-
-    for (const url of candidateUrls) {
-      try {
-        leaderboardJson = await fetchJson(url);
-        usedUrl = url;
-        break;
-      } catch {
-        // try next
-      }
-    }
-
-    if (!leaderboardJson) {
+    if (!competitors.length) {
       return NextResponse.json({
         ok: false,
-        error: "Could not load ESPN leaderboard feed.",
+        error: "Could not load ESPN competitors for that event.",
       });
     }
 
-    const rawPlayers = dedupePlayers(walkForPlayers(leaderboardJson));
-
     if (action === "field") {
-      const names = rawPlayers
-        .map((p) => p.name)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
-
       return NextResponse.json({
         ok: true,
         eventName,
-        players: names,
-        source: usedUrl,
+        players: extractPlayerField(competitors),
+        source: scoreboardUrl,
       });
     }
 
     if (action === "leaderboard") {
-      const leaderboard: Record<string, number | null> = {};
-
-      for (const player of rawPlayers) {
-        leaderboard[normalizeName(player.name)] = player.position;
-      }
-
       return NextResponse.json({
         ok: true,
         eventName,
-        leaderboard,
-        source: usedUrl,
+        leaderboard: buildLeaderboard(competitors),
+        source: scoreboardUrl,
       });
     }
 

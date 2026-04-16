@@ -452,6 +452,11 @@ export default function Page() {
     if (!currentSession) return;
     setBusy("Applying manual scores...");
     const parsed = parseManualLeaderboard(manualLeaderboardDraft);
+    if (!Object.keys(parsed).length) {
+      setBusy("");
+      setStatusMessage("Paste at least one leaderboard line before applying manual scores.");
+      return;
+    }
     await updateSession({ manual_leaderboard_input: manualLeaderboardDraft, current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
     setBusy("");
   }
@@ -633,6 +638,9 @@ export default function Page() {
                           <div className="flex flex-wrap gap-3">
                             <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={pullLeaderboard}>Pull ESPN Leaderboard</button>
                             <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={applyManualScores}>Apply Manual Scores</button>
+                          </div>
+                          <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-3 py-2 text-sm text-[#617061]">
+                            {busy || statusMessage}
                           </div>
                           <div className="text-sm text-[#617061]">Use this area to load or correct tournament positions before everyone watches the live standings.</div>
                         </div>
