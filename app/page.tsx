@@ -303,6 +303,7 @@ export default function Page() {
   const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isCommissioner || currentTeamOnClock.owner_user_id === user.id);
   const canManageLeague = !!user && isCommissioner;
   const ownedTeamNames = currentUsersTeams.map((team) => team.name);
+  const showTeamPill = !!profile?.team_name && normalizeName(profile.team_name) !== normalizeName(profile.username);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -1057,7 +1058,7 @@ export default function Page() {
               <div className="flex flex-wrap justify-end gap-2 text-xs">
                 <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
                 <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
-                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (profile?.team_name ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile.team_name}</span> : null)}
+                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (showTeamPill ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile?.team_name}</span> : null)}
               </div>
               <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
             </div>
