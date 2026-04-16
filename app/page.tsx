@@ -2,6 +2,7 @@
 
 import type { KeyboardEvent } from "react";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 type EventOption = { id: string; name: string };
@@ -14,11 +15,13 @@ type DraftSession = {
   manual_leaderboard_input: string | null;
   current_positions: Record<string, number | null> | null;
   status: string;
+  commissioner_id: string | null;
   created_at: string;
   updated_at: string;
 };
-type DraftTeam = { id: string; session_id: string; name: string; draft_slot: number | null; active: boolean; created_at: string };
+type DraftTeam = { id: string; session_id: string; name: string; draft_slot: number | null; active: boolean; owner_user_id: string | null; created_at: string };
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
+type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "member"; created_at: string };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; error?: string };
@@ -119,6 +122,9 @@ function sanitizePlayerNames(players: string[]) {
 
 export default function Page() {
   const [sessions, setSessions] = useState<DraftSession[]>([]);
+  const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [currentSession, setCurrentSession] = useState<DraftSession | null>(null);
   const [teams, setTeams] = useState<DraftTeam[]>([]);
@@ -130,6 +136,11 @@ export default function Page() {
   const [manualLeaderboardDraft, setManualLeaderboardDraft] = useState("");
   const [playerFilter, setPlayerFilter] = useState("");
   const [newTeamName, setNewTeamName] = useState("");
+  const [authMode, setAuthMode] = useState<"sign_in" | "sign_up">("sign_in");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authUsername, setAuthUsername] = useState("");
+  const [authTeamName, setAuthTeamName] = useState(DEFAULT_TEAM_NAMES[0]);
   const [statusMessage, setStatusMessage] = useState("Loading league data...");
   const [busy, setBusy] = useState("");
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
@@ -140,9 +151,37 @@ export default function Page() {
   const deferredFilter = useDeferredValue(playerFilter);
 
   useEffect(() => {
-    loadSessions();
     loadEvents();
+    initializeAuth();
   }, []);
+
+  useEffect(() => {
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setUser(nextSession?.user ?? null);
+      setAuthChecked(true);
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    if (!user) {
+      setProfile(null);
+      setSessions([]);
+      setCurrentSession(null);
+      setTeams([]);
+      setPicks([]);
+      setSelectedSessionId("");
+      setStatusMessage("Sign in to access the league.");
+      return;
+    }
+
+    loadProfile(user.id);
+    loadSessions();
+  }, [authChecked, user]);
 
   useEffect(() => {
     if (!selectedSessionId && sessions[0]?.id) setSelectedSessionId(sessions[0].id);
@@ -150,6 +189,7 @@ export default function Page() {
 
   useEffect(() => {
     if (!selectedSessionId) return;
+    if (!user) return;
     loadSession(selectedSessionId);
     const channel = supabase
       .channel(`draft-${selectedSessionId}`)
@@ -158,7 +198,7 @@ export default function Page() {
       .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, user]);
 
   useEffect(() => {
     setPlayerPoolDraft(currentSession?.player_input ?? "");
@@ -173,6 +213,13 @@ export default function Page() {
     }
     loadOdds(currentSession.event_name);
   }, [currentSession?.event_name]);
+
+  useEffect(() => {
+    if (!profile || profile.role === "commissioner") return;
+    if (activeRoomTab === "setup" || activeRoomTab === "admin") {
+      setActiveRoomTab("draft");
+    }
+  }, [activeRoomTab, profile]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -228,6 +275,11 @@ export default function Page() {
     if (!currentSession?.updated_at) return "Not updated yet";
     return new Date(currentSession.updated_at).toLocaleString();
   }, [currentSession?.updated_at]);
+  const isCommissioner = profile?.role === "commissioner";
+  const currentUsersTeams = useMemo(() => teams.filter((team) => team.owner_user_id === user?.id), [teams, user?.id]);
+  const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isCommissioner || currentTeamOnClock.owner_user_id === user.id);
+  const canManageLeague = !!user && isCommissioner;
+  const ownedTeamNames = currentUsersTeams.map((team) => team.name);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -236,6 +288,102 @@ export default function Page() {
     }
     setHighlightedPlayerIndex((current) => Math.min(current, availablePlayers.length - 1));
   }, [availablePlayers]);
+
+  async function initializeAuth() {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
+      console.error(error);
+      setAuthChecked(true);
+      setStatusMessage("Could not load your sign-in session.");
+      return;
+    }
+
+    setUser(data.session?.user ?? null);
+    setAuthChecked(true);
+  }
+
+  async function loadProfile(userId: string) {
+    const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
+    if (error) {
+      console.error(error);
+      setStatusMessage("Could not load your league profile.");
+      return;
+    }
+
+    setProfile((data as Profile | null) ?? null);
+  }
+
+  async function signIn() {
+    if (!authEmail.trim() || !authPassword) {
+      setStatusMessage("Enter your email and password to sign in.");
+      return;
+    }
+
+    setBusy("Signing in...");
+    const { error } = await supabase.auth.signInWithPassword({
+      email: authEmail.trim(),
+      password: authPassword,
+    });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not sign you in.");
+      return;
+    }
+
+    setStatusMessage("Signed in.");
+  }
+
+  async function signUp() {
+    if (!authUsername.trim()) {
+      setStatusMessage("Choose a username before creating your account.");
+      return;
+    }
+    if (!authEmail.trim() || !authPassword) {
+      setStatusMessage("Enter your email and password before creating your account.");
+      return;
+    }
+    if (!authTeamName.trim()) {
+      setStatusMessage("Choose your team before creating your account.");
+      return;
+    }
+
+    setBusy("Creating account...");
+    const { error } = await supabase.auth.signUp({
+      email: authEmail.trim(),
+      password: authPassword,
+      options: {
+        data: {
+          username: authUsername.trim(),
+          team_name: authTeamName.trim(),
+        },
+      },
+    });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not create your account.");
+      return;
+    }
+
+    setStatusMessage("Account created. If your project requires email confirmation, verify your email and then sign in.");
+  }
+
+  async function signOut() {
+    setBusy("Signing out...");
+    const { error } = await supabase.auth.signOut();
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage("Could not sign you out.");
+      return;
+    }
+
+    setStatusMessage("Signed out.");
+  }
 
   async function loadSessions() {
     const { data, error } = await supabase.from("draft_sessions").select("*").order("created_at", { ascending: false });
@@ -312,6 +460,10 @@ export default function Page() {
   }
 
   async function updateTeam(teamId: string, patch: Partial<DraftTeam>, message?: string) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can edit teams and draft order.");
+      return false;
+    }
     const { error } = await supabase.from("draft_teams").update(patch).eq("id", teamId);
     if (error) {
       console.error(error);
@@ -323,6 +475,10 @@ export default function Page() {
   }
 
   async function addTeam() {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can add teams.");
+      return;
+    }
     if (!currentSession) return;
 
     const trimmedName = newTeamName.trim();
@@ -360,6 +516,10 @@ export default function Page() {
   }
 
   async function deleteTeam(team: DraftTeam) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can delete teams.");
+      return;
+    }
     if (team.draft_slot !== null) {
       setStatusMessage("Remove that team from the draft order before deleting it.");
       return;
@@ -381,6 +541,10 @@ export default function Page() {
   }
 
   async function deleteSession(session: DraftSession) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can delete sessions.");
+      return;
+    }
     if (!window.confirm(`Delete "${session.name}"? This removes the session, draft order, picks, and saved scoring.`)) return;
     setBusy("Deleting session...");
     const { error } = await supabase.from("draft_sessions").delete().eq("id", session.id);
@@ -397,17 +561,30 @@ export default function Page() {
   }
 
   async function createSession() {
+    if (!canManageLeague || !user) return setStatusMessage("Only the commissioner can create new tournament sessions.");
     const trimmedName = newSessionName.trim();
     if (!trimmedName) return setStatusMessage("Type a tournament name before creating a session.");
     setBusy("Creating session...");
     const event = events.find((item) => item.id === newSessionEventId) ?? null;
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, status: "setup" }]).select("*").single();
+    const sessionInsert = await supabase.from("draft_sessions").insert([{ name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
       return setStatusMessage("Could not create the tournament session.");
     }
-    const teamsInsert = await supabase.from("draft_teams").insert(DEFAULT_TEAM_NAMES.map((name) => ({ session_id: sessionInsert.data.id, name, draft_slot: null, active: false })));
+    const profileResult = await supabase.from("profiles").select("id, team_name").not("team_name", "is", null);
+    const ownerByTeam = new Map(
+      (((profileResult.data ?? []) as Pick<Profile, "id" | "team_name">[])
+        .filter((entry): entry is Pick<Profile, "id" | "team_name"> & { team_name: string } => !!entry.team_name)
+        .map((entry) => [normalizeName(entry.team_name), entry.id]))
+    );
+    const teamsInsert = await supabase.from("draft_teams").insert(DEFAULT_TEAM_NAMES.map((name) => ({
+      session_id: sessionInsert.data.id,
+      name,
+      draft_slot: null,
+      active: false,
+      owner_user_id: ownerByTeam.get(normalizeName(name)) ?? null,
+    })));
     if (teamsInsert.error) {
       console.error(teamsInsert.error);
       setBusy("");
@@ -421,12 +598,14 @@ export default function Page() {
   }
 
   async function assignNextPick(team: DraftTeam) {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can change the draft order.");
     const nextSlot = nextAvailableDraftSlot(teams);
     await updateTeam(team.id, { draft_slot: nextSlot, active: true }, `${team.name} is now pick ${nextSlot}.`);
     await loadSession(selectedSessionId, false);
   }
 
   async function normalizeDraftOrder() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can repair the draft order.");
     const orderedTeams = getAssignedActiveTeams(teams);
     for (const [index, team] of orderedTeams.entries()) {
       const targetSlot = index + 1;
@@ -439,6 +618,7 @@ export default function Page() {
   }
 
   async function removeFromOrder(team: DraftTeam) {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can remove teams from the draft order.");
     if (team.draft_slot === null) return;
     const removedSlot = team.draft_slot;
     await updateTeam(team.id, { draft_slot: null, active: false }, `${team.name} was removed from the draft order.`);
@@ -449,6 +629,7 @@ export default function Page() {
   }
 
   async function moveTeam(team: DraftTeam, direction: "up" | "down") {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can reorder teams.");
     if (team.draft_slot === null) return;
     const target = direction === "up" ? team.draft_slot - 1 : team.draft_slot + 1;
     const swapTeam = assignedTeams.find((entry) => entry.draft_slot === target);
@@ -460,12 +641,14 @@ export default function Page() {
   }
 
   async function clearDraftOrder() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can clear the draft order.");
     for (const team of assignedTeams) await updateTeam(team.id, { draft_slot: null, active: false });
     setStatusMessage("Cleared the draft order.");
     await loadSession(selectedSessionId, false);
   }
 
   async function savePlayerPool() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can save the player pool.");
     setBusy("Saving player pool...");
     const cleanedPlayers = sanitizePlayerNames(playerPoolDraft.split("\n"));
     const cleanedPlayerInput = cleanedPlayers.join("\n");
@@ -475,6 +658,7 @@ export default function Page() {
   }
 
   async function importFieldFromEspn() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can import the field.");
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before importing the field.");
     setBusy("Importing field...");
     try {
@@ -493,6 +677,7 @@ export default function Page() {
   }
 
   async function pullLeaderboard() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can refresh leaderboard scoring.");
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
     setBusy("Pulling leaderboard...");
     try {
@@ -508,6 +693,7 @@ export default function Page() {
   }
 
   async function autoDraftRandomly() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can run the random draft.");
     if (!currentSession || !validDraftOrder || draftComplete) return;
     if (!availablePlayers.length) {
       setStatusMessage("There are no available golfers left to auto-draft.");
@@ -561,6 +747,7 @@ export default function Page() {
   }
 
   async function applyManualScores() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can apply manual scores.");
     if (!currentSession) return;
     setBusy("Applying manual scores...");
     const parsed = parseManualLeaderboard(manualLeaderboardDraft);
@@ -574,6 +761,7 @@ export default function Page() {
   }
 
   async function replacePick(playerName: string) {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can swap drafted golfers.");
     if (!editingPick) return;
 
     const replacementKey = normalizeName(playerName);
@@ -608,6 +796,7 @@ export default function Page() {
 
   async function makePick(playerName: string) {
     if (!currentSession || !validDraftOrder || !currentTeamOnClock || draftComplete) return;
+    if (!canDraftCurrentPick) return setStatusMessage("You can only draft when your team is on the clock.");
     const playerKey = normalizeName(playerName);
     if (draftedKeys.has(playerKey)) return setStatusMessage(`${playerName} has already been drafted.`);
     setBusy("Saving pick...");
@@ -619,14 +808,16 @@ export default function Page() {
       return setStatusMessage("Could not save that pick. Refresh if someone else drafted at the same time.");
     }
     const isLastPick = picks.length + 1 >= totalPicks;
-    await updateSession({ status: isLastPick ? "draft_complete" : "drafting" }, `${currentTeamOnClock.name} drafted ${playerName}.`);
-      if (isLastPick) {
-        setActiveRoomTab("results");
-      }
-      setPlayerFilter("");
-      setHighlightedPlayerIndex(0);
-      setBusy("");
+    setStatusMessage(`${currentTeamOnClock.name} drafted ${playerName}.`);
+    await loadSessions();
+    await loadSession(currentSession.id, false);
+    if (isLastPick) {
+      setActiveRoomTab("results");
     }
+    setPlayerFilter("");
+    setHighlightedPlayerIndex(0);
+    setBusy("");
+  }
 
   function handlePlayerSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (!availablePlayers.length) return;
@@ -656,6 +847,7 @@ export default function Page() {
   }
 
   async function undoLastPick() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can undo picks.");
     if (!currentSession || !picks.length) return setStatusMessage("There is no pick to undo.");
     setBusy("Undoing pick...");
     const lastPick = picks[picks.length - 1];
@@ -671,6 +863,10 @@ export default function Page() {
   }
 
   function beginSwap(pick: DraftPick, teamName: string) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can swap drafted golfers.");
+      return;
+    }
     setEditingPick({
       id: pick.id,
       teamName,
@@ -680,26 +876,95 @@ export default function Page() {
     setStatusMessage(`Choose a replacement for ${pick.player_name} on ${teamName}.`);
   }
 
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
+          <div className="w-full rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+            <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+            <p className="mb-0 mt-4 text-[#617061]">Loading your league access...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
+          <div className="grid w-full gap-5 rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+            <div>
+              <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+              <p className="mb-0 mt-4 text-[#617061]">
+                Create an account to draft for your team, follow live results, and review past tournaments. The first account created becomes the commissioner automatically.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button className={`rounded-full px-4 py-2 ${authMode === "sign_in" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setAuthMode("sign_in")}>Sign In</button>
+              <button className={`rounded-full px-4 py-2 ${authMode === "sign_up" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setAuthMode("sign_up")}>Create Account</button>
+            </div>
+
+            <div className="grid gap-3">
+              {authMode === "sign_up" ? (
+                <>
+                  <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="Username" />
+                  <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authTeamName} onChange={(event) => setAuthTeamName(event.target.value)}>
+                    {DEFAULT_TEAM_NAMES.map((teamName) => <option key={teamName} value={teamName}>{teamName}</option>)}
+                  </select>
+                </>
+              ) : null}
+              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" />
+              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password" />
+              <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={authMode === "sign_up" ? signUp : signIn}>
+                {busy === "Creating account..." || busy === "Signing in..." ? busy : authMode === "sign_up" ? "Create Account" : "Sign In"}
+              </button>
+            </div>
+
+            <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+              {busy || statusMessage}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
-        <div className="mx-auto mb-5 max-w-[1880px]">
+        <div className="mx-auto mb-5 flex max-w-[1880px] flex-wrap items-start justify-between gap-4">
           <h1 className="my-2 font-[Georgia] text-5xl leading-none md:text-7xl">Rat Race Golf</h1>
+          <div className="grid justify-items-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2 text-xs">
+              <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
+              <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+              {profile?.team_name ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile.team_name}</span> : null}
+            </div>
+            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
+          </div>
         </div>
 
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
         <section className="rounded-3xl border border-white/80 bg-white/80 p-5 shadow-[0_18px_45px_rgba(74,57,28,0.12)] lg:sticky lg:top-4">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="m-0 font-[Georgia] text-2xl">New Draft</h2>
+            <h2 className="m-0 font-[Georgia] text-2xl">{canManageLeague ? "New Draft" : "League Hub"}</h2>
             <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{sessions.length} saved</span>
           </div>
-            <div className="grid min-w-0 gap-3">
-            <input className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionName} onChange={(event) => setNewSessionName(event.target.value)} placeholder="Tournament name" />
-              <select className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
-                <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
-                {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
-              </select>
-            <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
-            </div>
+            {canManageLeague ? (
+              <div className="grid min-w-0 gap-3">
+                <input className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionName} onChange={(event) => setNewSessionName(event.target.value)} placeholder="Tournament name" />
+                <select className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
+                  <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
+                  {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
+                </select>
+                <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+                Open any tournament below to watch the live draft, make your pick when your team is on the clock, and review final leaderboards.
+              </div>
+            )}
             <div className="mt-5 grid gap-3">
               {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
                 <div key={session.id} className={`rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
@@ -707,7 +972,7 @@ export default function Page() {
                     <button className="min-w-0 flex-1 text-left" onClick={() => setSelectedSessionId(session.id)}>
                       <div className="flex justify-between gap-3"><strong>{session.name}</strong><span className="text-sm text-[#617061]">{statusLabel(session.status)}</span></div>
                     </button>
-                    <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button>
+                    {canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
                   </div>
                   <div className="text-sm text-[#617061]">{session.event_name || "No PGA event linked yet"}</div>
                   <div className="text-sm text-[#617061]">Saved {new Date(session.created_at).toLocaleString()}</div>
@@ -722,16 +987,16 @@ export default function Page() {
               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
             </div>
 
-            {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Create a tournament session on the left, then click it to open the shared draft room.</div> : (
+            {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
               <div className="grid gap-5">
                   <div className="flex flex-wrap gap-3">
-                    <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button>
-                    <button className={`rounded-full px-4 py-2 ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button>
+                    {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button> : null}
+                    {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : null}
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                 </div>
 
-                {activeRoomTab === "setup" ? (
+                {canManageLeague && activeRoomTab === "setup" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                     <h3 className="mb-4 mt-0 font-[Georgia] text-xl">League Setup</h3>
@@ -817,7 +1082,7 @@ export default function Page() {
                   </div>
                 ) : null}
 
-                {activeRoomTab === "admin" ? (
+                {canManageLeague && activeRoomTab === "admin" ? (
                 <div className="grid gap-5">
                   <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                     <div className="mb-4 flex items-center justify-between gap-3">
@@ -864,7 +1129,7 @@ export default function Page() {
                                 ? "The draft order needs to be repaired before you can make picks."
                                 : draftComplete
                                   ? "The draft is complete. You can still score the results below."
-                                  : `${currentTeamOnClock?.name ?? "Nobody"} is on the clock for pick ${picks.length + 1}.`}
+                                    : `${currentTeamOnClock?.name ?? "Nobody"} is on the clock for pick ${picks.length + 1}.${canDraftCurrentPick ? " You're live for this pick." : currentUsersTeams.length ? ` Your team${currentUsersTeams.length > 1 ? "s are" : " is"} ${ownedTeamNames.join(", ")}.` : " Watch live until your team is up."}`}
                           </div>
                           <div className="flex flex-wrap gap-2 text-xs font-medium text-[#28523e]">
                             <span className="rounded-full bg-white/70 px-3 py-1">Event: {currentSession.event_name || "Not linked"}</span>
@@ -876,9 +1141,9 @@ export default function Page() {
                         </div>
                         <div className="flex flex-wrap gap-3">
                           {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Draft Order</button> : null}
-                        {!draftComplete && validDraftOrder ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft Remaining</button> : null}
-                        <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button>
-                        {editingPick ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
+                        {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft Remaining</button> : null}
+                        {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button> : null}
+                          {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                       </div>
                       <div className="grid items-start gap-5 xl:grid-cols-[minmax(290px,0.7fr)_minmax(760px,1.3fr)] 2xl:grid-cols-[minmax(310px,0.62fr)_minmax(980px,1.38fr)]">
                         <div className="grid content-start self-start gap-3">
@@ -895,7 +1160,7 @@ export default function Page() {
                                   <div className="truncate font-medium">{player}</div>
                                   <div className="text-[11px] text-[#617061]">{oddsByPlayer[normalizeName(player)] ? `CBS odds +${oddsByPlayer[normalizeName(player)]}` : "Odds unavailable"}</div>
                                 </div>
-                                <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? false : (!validDraftOrder || draftComplete || !currentTeamOnClock)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
+                                  <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
                               </div>
                             ))}
                           </div>
@@ -923,7 +1188,7 @@ export default function Page() {
                                         {pick ? (
                                           <div className="grid gap-2">
                                             <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">{pick.player_name}</div>
-                                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button>
+                                            {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
                                           </div>
                                         ) : (
                                           <div className={`rounded-xl px-3 py-2 text-sm leading-tight ${isOnClock ? "bg-white text-[#1a5c3a] font-semibold" : "bg-[#f7f2e9] text-[#617061]"}`}>
@@ -952,10 +1217,10 @@ export default function Page() {
                                   <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
                                 </div>
                               </div>
-                                <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
-                                  <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                  <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
+                                    {canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
                                   {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                  </button>
+                                    </button> : null}
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   Last updated: {resultsUpdatedLabel}
                                 </div>
