@@ -1236,13 +1236,13 @@ export default function Page() {
                       </div>
                         <div className="grid gap-2">
                           {teams.map((team) => (
-                            <div key={team.id} className="grid gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2.5 shadow-sm xl:grid-cols-[minmax(180px,0.9fr)_minmax(220px,1.1fr)_auto] xl:items-center">
-                              <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
-                              <select className="w-full rounded-xl border border-black/15 bg-white px-3 py-2" value={team.owner_user_id ?? ""} onChange={(event) => assignTeamOwner(team, event.target.value)}>
-                                <option value="">No owner assigned</option>
+                            <div key={team.id} className="grid gap-2 rounded-2xl border border-black/10 bg-white/80 px-3 py-2.5 shadow-sm xl:grid-cols-[180px_210px_minmax(0,1fr)] xl:items-center">
+                              <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
+                              <select className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.owner_user_id ?? ""} onChange={(event) => assignTeamOwner(team, event.target.value)}>
+                                <option value="">No owner</option>
                                 {profiles.map((entry) => <option key={entry.id} value={entry.id}>{entry.username}{entry.team_name ? ` (${entry.team_name})` : ""}</option>)}
                               </select>
-                              <div className="flex flex-wrap items-center justify-between gap-2 text-sm xl:justify-end">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-sm xl:justify-end xl:pl-2">
                                 <span className="text-[#617061]">{team.draft_slot ? `Pick ${team.draft_slot} this week` : "Not in this week's draft"}{team.owner_user_id ? " · Owner assigned" : ""}</span>
                                 {team.draft_slot === null ? (
                                   <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-sm text-[#9d4b2f]" onClick={() => deleteTeam(team)}>Delete</button>
