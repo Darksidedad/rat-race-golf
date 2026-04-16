@@ -682,11 +682,11 @@ export default function Page() {
 
   return (
     <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
-        <div className="mx-auto mb-5 max-w-[1700px]">
+        <div className="mx-auto mb-5 max-w-[1880px]">
           <h1 className="my-2 font-[Georgia] text-5xl leading-none md:text-7xl">Rat Race Golf</h1>
         </div>
 
-      <div className="mx-auto grid max-w-[1700px] gap-5 lg:grid-cols-[320px_1fr]">
+      <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
         <section className="rounded-3xl border border-white/80 bg-white/80 p-5 shadow-[0_18px_45px_rgba(74,57,28,0.12)] lg:sticky lg:top-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h2 className="m-0 font-[Georgia] text-2xl">New Draft</h2>
@@ -880,7 +880,7 @@ export default function Page() {
                         <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button>
                         {editingPick ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                       </div>
-                      <div className="grid items-start gap-5 2xl:grid-cols-[minmax(360px,0.9fr)_minmax(520px,1.1fr)]">
+                      <div className="grid items-start gap-5 xl:grid-cols-[minmax(290px,0.7fr)_minmax(760px,1.3fr)] 2xl:grid-cols-[minmax(310px,0.62fr)_minmax(980px,1.38fr)]">
                         <div className="grid content-start self-start gap-3">
                           <div className="flex items-center justify-between gap-3">
                             <h3 className="m-0 font-[Georgia] text-xl">Available Golfers</h3>
