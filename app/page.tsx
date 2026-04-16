@@ -916,7 +916,7 @@ export default function Page() {
                                         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                                           <div className="min-w-0">
                                             <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">Pick {overallPick}</div>
-                                            <strong className="block text-sm leading-tight">#{team.draft_slot} {team.name}</strong>
+                                            <strong className="block text-sm leading-tight">{team.name}</strong>
                                           </div>
                                           {isOnClock ? <span className="rounded-full bg-[#1a5c3a] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">On Clock</span> : null}
                                         </div>
