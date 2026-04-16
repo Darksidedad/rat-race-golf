@@ -692,14 +692,14 @@ export default function Page() {
             <h2 className="m-0 font-[Georgia] text-2xl">New Draft</h2>
             <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{sessions.length} saved</span>
           </div>
-          <div className="grid gap-3">
-            <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionName} onChange={(event) => setNewSessionName(event.target.value)} placeholder="Tournament name" />
-            <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
-              <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
-              {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
-            </select>
-            <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
-          </div>
+            <div className="grid min-w-0 gap-3">
+            <input className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionName} onChange={(event) => setNewSessionName(event.target.value)} placeholder="Tournament name" />
+              <select className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
+                <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
+                {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
+              </select>
+            <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
+            </div>
             <div className="mt-5 grid gap-3">
               {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
                 <div key={session.id} className={`rounded-2xl border px-4 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
@@ -947,20 +947,22 @@ export default function Page() {
                   <div className="rounded-[2rem] border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-4 text-white shadow-[0_18px_45px_rgba(74,57,28,0.15)]">
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                             <div className="grid gap-2">
-                              <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
-                              <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
-                                <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
-                                <span className="rounded-full bg-white/12 px-3 py-1">Last updated: {resultsUpdatedLabel}</span>
+                                <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
+                                <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
+                                  <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
+                                </div>
                               </div>
-                            </div>
-                            <div className="grid gap-2 justify-items-start">
-                              <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                              <div className="grid gap-2 justify-items-start">
+                                <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
                                 {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                              </button>
-                              <div className="rounded-full bg-white/12 px-3 py-1 text-xs text-white/85">
-                                {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
+                                </button>
+                                <div className="text-xs text-white/85">
+                                  Last updated: {resultsUpdatedLabel}
+                                </div>
+                                <div className="rounded-full bg-white/12 px-3 py-1 text-xs text-white/85">
+                                  {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
+                                </div>
                               </div>
-                            </div>
                           </div>
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                           {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
