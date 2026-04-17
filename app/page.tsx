@@ -1320,12 +1320,12 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="grid items-start gap-4 xl:grid-cols-[minmax(320px,0.9fr)_minmax(360px,1.1fr)]">
-                            <div className="grid min-h-[430px] gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
-                              <div className="flex items-center justify-between gap-3">
-                                <h4 className="m-0 font-[Georgia] text-lg">Available Teams</h4>
-                                <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{unassignedTeams.length} left</span>
-                              </div>
-                            <div className="grid max-h-[420px] content-start gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
+                            <div className="grid content-start self-start gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                  <h4 className="m-0 font-[Georgia] text-lg">Available Teams</h4>
+                                  <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{unassignedTeams.length} left</span>
+                                </div>
+                            <div className={`grid content-start gap-2 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2 ${unassignedTeams.length > 5 ? "max-h-[420px] overflow-auto" : ""}`}>
                               {!unassignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-[#617061]">Every team has been assigned to the draft order.</div> : unassignedTeams.map((team) => (
                                 <div key={team.id} className="grid min-h-[56px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/90 px-3 py-2.5">
                                   <span className="truncate font-medium">{team.name}</span>
