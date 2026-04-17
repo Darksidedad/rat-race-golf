@@ -27,11 +27,20 @@ type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string 
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; error?: string };
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
-  type RoomTab = "setup" | "admin" | "draft" | "results";
+type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
 type EditingPick = {
   id: string;
   teamName: string;
   playerName: string;
+};
+type SeasonTeamStat = {
+  teamName: string;
+  eventsPlayed: number;
+  wins: number;
+  top3: number;
+  seasonPoints: number;
+  bestFinish: number | null;
+  lastTotal: number | null;
 };
 
 const ROUNDS = 4;
@@ -79,6 +88,12 @@ function totalColorClass(total: string | null | undefined) {
   if (value.startsWith("-")) return "text-[#9d2f2f]";
   if (value.startsWith("+")) return "text-[#1f2a1d]";
   return "text-[#1f2a1d]";
+}
+
+function formatProfileLabel(username: string, teamName: string | null | undefined) {
+  const trimmedTeam = teamName?.trim();
+  if (!trimmedTeam) return username;
+  return normalizeName(trimmedTeam) === normalizeName(username) ? username : `${username} (${trimmedTeam})`;
 }
 
 function getAssignedActiveTeams(teams: DraftTeam[]) {
@@ -155,6 +170,10 @@ export default function Page() {
   const [passwordResetMode, setPasswordResetMode] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState("");
+  const [profileDraftName, setProfileDraftName] = useState("");
+  const [profileDraftTeam, setProfileDraftTeam] = useState("");
+  const [seasonStats, setSeasonStats] = useState<SeasonTeamStat[]>([]);
+  const [seasonStatsLoading, setSeasonStatsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Loading league data...");
   const [busy, setBusy] = useState("");
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
@@ -253,6 +272,16 @@ export default function Page() {
       setPasswordResetMode(true);
     }
   }, []);
+
+  useEffect(() => {
+    setProfileDraftName(profile?.username ?? "");
+    setProfileDraftTeam(profile?.team_name ?? "");
+  }, [profile?.username, profile?.team_name]);
+
+  useEffect(() => {
+    if (activeRoomTab !== "season" || !sessions.length) return;
+    void loadSeasonStats();
+  }, [activeRoomTab, sessions]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -459,6 +488,117 @@ export default function Page() {
     setRecoveryPasswordConfirm("");
     setPasswordResetMode(false);
     setStatusMessage("Password updated. You can use your new password now.");
+  }
+
+  async function saveProfile() {
+    if (!user) return;
+    const nextName = profileDraftName.trim();
+    const nextTeam = profileDraftTeam.trim();
+
+    if (!nextName) {
+      setStatusMessage("Display name cannot be empty.");
+      return;
+    }
+
+    setBusy("Saving profile...");
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        username: nextName,
+        team_name: nextTeam || null,
+      })
+      .eq("id", user.id);
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not save your profile.");
+      return;
+    }
+
+    setStatusMessage("Profile updated.");
+    await loadProfile(user.id);
+    if (canManageLeague) await loadProfiles();
+  }
+
+  async function loadSeasonStats() {
+    if (!sessions.length) {
+      setSeasonStats([]);
+      return;
+    }
+
+    setSeasonStatsLoading(true);
+    const sessionIds = sessions.map((session) => session.id);
+    const [teamsResult, picksResult] = await Promise.all([
+      supabase.from("draft_teams").select("*").in("session_id", sessionIds),
+      supabase.from("draft_picks").select("*").in("session_id", sessionIds),
+    ]);
+    setSeasonStatsLoading(false);
+
+    if (teamsResult.error || picksResult.error) {
+      console.error(teamsResult.error, picksResult.error);
+      setStatusMessage("Could not load season statistics.");
+      return;
+    }
+
+    const teamsBySession = new Map<string, DraftTeam[]>();
+    ((teamsResult.data ?? []) as DraftTeam[]).forEach((team) => {
+      const existing = teamsBySession.get(team.session_id) ?? [];
+      existing.push(team);
+      teamsBySession.set(team.session_id, existing);
+    });
+
+    const picksBySession = new Map<string, DraftPick[]>();
+    ((picksResult.data ?? []) as DraftPick[]).forEach((pick) => {
+      const existing = picksBySession.get(pick.session_id) ?? [];
+      existing.push(pick);
+      picksBySession.set(pick.session_id, existing);
+    });
+
+    const aggregate = new Map<string, SeasonTeamStat>();
+
+    sessions.forEach((session) => {
+      const sessionTeams = getAssignedActiveTeams(teamsBySession.get(session.id) ?? []);
+      const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
+      const positions = session.current_positions ?? {};
+
+      const sessionLeaderboard = sessionTeams.map((team) => {
+        const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
+          const position = positions[pick.player_key] ?? null;
+          return pointsForPosition(position);
+        });
+        const total = [...playerScores].sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
+        return { teamName: team.name, total };
+      }).sort((a, b) => b.total - a.total);
+
+      sessionLeaderboard.forEach((entry, index) => {
+        const current = aggregate.get(entry.teamName) ?? {
+          teamName: entry.teamName,
+          eventsPlayed: 0,
+          wins: 0,
+          top3: 0,
+          seasonPoints: 0,
+          bestFinish: null,
+          lastTotal: null,
+        };
+
+        const finish = index + 1;
+        current.eventsPlayed += 1;
+        current.seasonPoints += entry.total;
+        current.lastTotal = entry.total;
+        current.bestFinish = current.bestFinish === null ? finish : Math.min(current.bestFinish, finish);
+        if (finish === 1) current.wins += 1;
+        if (finish <= 3) current.top3 += 1;
+        aggregate.set(entry.teamName, current);
+      });
+    });
+
+    setSeasonStats(
+      Array.from(aggregate.values()).sort((a, b) => {
+        if (b.seasonPoints !== a.seasonPoints) return b.seasonPoints - a.seasonPoints;
+        return a.teamName.localeCompare(b.teamName);
+      })
+    );
   }
 
   async function assignTeamOwner(team: DraftTeam, ownerUserId: string) {
@@ -1109,6 +1249,7 @@ export default function Page() {
               <div className="flex flex-wrap justify-end gap-2 text-xs">
                 <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
                 <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "profile" ? "bg-[#1a5c3a] text-white" : "bg-[#f7f2e9] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("profile")}>Profile</button>
                 {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (showTeamPill ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile?.team_name}</span> : null)}
               </div>
               <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
@@ -1162,6 +1303,7 @@ export default function Page() {
                   {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button> : null}
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
+                  <button className={`rounded-full px-4 py-2 ${activeRoomTab === "season" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("season")}>Season</button>
                 </div>
 
                 {canManageLeague && activeRoomTab === "setup" ? (
@@ -1297,7 +1439,7 @@ export default function Page() {
                               <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
                               <select className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.owner_user_id ?? ""} onChange={(event) => assignTeamOwner(team, event.target.value)}>
                                 <option value="">No owner</option>
-                                {profiles.map((entry) => <option key={entry.id} value={entry.id}>{entry.username}{entry.team_name ? ` (${entry.team_name})` : ""}</option>)}
+                                {profiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username, entry.team_name)}</option>)}
                               </select>
                               <div className="flex flex-wrap items-center justify-between gap-2 text-sm xl:justify-end xl:pl-2">
                                 <span className="text-[#617061]">{team.draft_slot ? `Pick ${team.draft_slot} this week` : "Not in this week's draft"}{team.owner_user_id ? " · Owner assigned" : ""}</span>
@@ -1312,11 +1454,31 @@ export default function Page() {
                         </div>
                     </div>
                   </div>
-                </div>
+                  </div>
+                  ) : null}
+
+                {activeRoomTab === "profile" ? (
+                  <div className="grid gap-5">
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <h3 className="m-0 font-[Georgia] text-xl">My Profile</h3>
+                        <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                      </div>
+                      <div className="grid gap-3 md:max-w-[520px]">
+                        <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={profileDraftName} onChange={(event) => setProfileDraftName(event.target.value)} placeholder="Display name" />
+                        <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={profileDraftTeam} onChange={(event) => setProfileDraftTeam(event.target.value)} placeholder="Claimed team name (optional)" />
+                        <div className="text-sm text-[#617061]">Your display name shows up around the league. Claimed team name helps the commissioner map your account to the right team.</div>
+                        <button className="justify-self-start rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={saveProfile}>Save Profile</button>
+                        <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+                          {busy || statusMessage}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 ) : null}
 
                 {activeRoomTab === "draft" ? (
-                  <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                     <h3 className="mb-4 mt-0 font-[Georgia] text-xl">Live Draft</h3>
                     <div className="grid gap-4">
                         <div className="grid gap-3 rounded-2xl bg-[#d9eadf] p-4 text-[#1a5c3a]">
@@ -1403,7 +1565,7 @@ export default function Page() {
                     </div>
                   </div>
                 </div>
-                ) : null}
+                  ) : null}
 
                 {activeRoomTab === "results" ? (
                 <div className="grid gap-5">
@@ -1458,10 +1620,44 @@ export default function Page() {
                         ))}
                     </div>
                   </div>
-                </div>
+                  </div>
                 ) : null}
-            </div>
-          )}
+
+                {activeRoomTab === "season" ? (
+                  <div className="grid gap-5">
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <h3 className="m-0 font-[Georgia] text-xl">Season Stats</h3>
+                        <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
+                      </div>
+                      {seasonStatsLoading ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Loading season stats...</div> : !seasonStats.length ? (
+                        <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No completed tournament data is ready for season stats yet.</div>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          {seasonStats.map((entry, index) => (
+                            <div key={entry.teamName} className={`grid gap-2 rounded-[1.6rem] p-4 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.10)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="text-xs uppercase tracking-[0.18em] text-[#617061]">#{index + 1} YTD</div>
+                                  <strong className="text-lg">{entry.teamName}</strong>
+                                </div>
+                                <div className="rounded-full bg-[#1a5c3a] px-3 py-1 text-sm font-semibold text-white">{entry.seasonPoints} pts</div>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-sm">
+                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Events</div><div className="font-semibold">{entry.eventsPlayed}</div></div>
+                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Wins</div><div className="font-semibold">{entry.wins}</div></div>
+                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Top 3</div><div className="font-semibold">{entry.top3}</div></div>
+                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Best Finish</div><div className="font-semibold">{entry.bestFinish ? `#${entry.bestFinish}` : "-"}</div></div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            )}
         </section>
       </div>
     </div>
