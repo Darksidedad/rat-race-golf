@@ -478,6 +478,37 @@ export default function Page() {
     if (currentSession) await loadSession(currentSession.id, false);
   }
 
+  async function removeMember(profileEntry: Profile) {
+    if (!canManageLeague) {
+      setStatusMessage("Only the commissioner can remove members.");
+      return;
+    }
+    if (profileEntry.role === "commissioner") {
+      setStatusMessage("Commissioner accounts cannot be removed here.");
+      return;
+    }
+    if (!window.confirm(`Remove ${profileEntry.username}'s account? This will also unassign them from any owned teams.`)) {
+      return;
+    }
+
+    setBusy("Removing member...");
+    const { error } = await supabase.rpc("remove_member_account", {
+      target_user_id: profileEntry.id,
+    });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not remove that member.");
+      return;
+    }
+
+    setStatusMessage(`Removed ${profileEntry.username}'s account.`);
+    await loadProfiles();
+    await loadSessions();
+    if (currentSession) await loadSession(currentSession.id, false);
+  }
+
   async function signOut() {
     setBusy("Signing out...");
     const { error } = await supabase.auth.signOut();
@@ -1233,15 +1264,20 @@ export default function Page() {
                             <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{profiles.length} accounts</span>
                           </div>
                           {!profiles.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-4 text-sm text-[#617061]">No members have created accounts yet.</div> : (
-                            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                              {profiles.map((entry) => (
-                                <div key={entry.id} className="grid gap-1 rounded-2xl border border-black/10 bg-white/90 p-3 text-sm">
-                                  <strong>{entry.username}</strong>
-                                  <span className="text-[#617061]">{entry.role === "commissioner" ? "Commissioner" : "Member"}</span>
-                                  <span className="text-[#617061]">{entry.team_name ? `Claimed team: ${entry.team_name}` : "No team claimed yet"}</span>
-                                </div>
-                              ))}
-                            </div>
+                              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                                {profiles.map((entry) => (
+                                  <div key={entry.id} className="grid gap-2 rounded-2xl border border-black/10 bg-white/90 p-3 text-sm">
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="grid gap-1">
+                                        <strong>{entry.username}</strong>
+                                        <span className="text-[#617061]">{entry.role === "commissioner" ? "Commissioner" : "Member"}</span>
+                                        <span className="text-[#617061]">{entry.team_name ? `Claimed team: ${entry.team_name}` : "No team claimed yet"}</span>
+                                      </div>
+                                      {entry.role !== "commissioner" ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => removeMember(entry)}>Remove</button> : null}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                           )}
                         </div>
                         <div className="flex flex-wrap gap-3 rounded-2xl border border-black/10 bg-white/75 p-3">

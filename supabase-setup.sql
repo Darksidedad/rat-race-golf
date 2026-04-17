@@ -139,6 +139,41 @@ begin
 end;
 $$;
 
+create or replace function public.remove_member_account(target_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_role text;
+begin
+  if not public.is_commissioner() then
+    raise exception 'Only the commissioner can remove members';
+  end if;
+
+  if target_user_id = auth.uid() then
+    raise exception 'The commissioner cannot remove their own account here';
+  end if;
+
+  select role
+  into target_role
+  from public.profiles
+  where id = target_user_id;
+
+  if target_role is null then
+    raise exception 'That member account no longer exists';
+  end if;
+
+  if target_role = 'commissioner' then
+    raise exception 'Commissioner accounts cannot be removed here';
+  end if;
+
+  delete from auth.users
+  where id = target_user_id;
+end;
+$$;
+
 create or replace function public.assign_first_commissioner()
 returns trigger
 language plpgsql
