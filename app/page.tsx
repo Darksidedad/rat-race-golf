@@ -772,7 +772,6 @@ export default function Page() {
   }
 
   async function pullLeaderboard() {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can refresh leaderboard scoring.");
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
     setBusy("Pulling leaderboard...");
     try {
@@ -1360,9 +1359,9 @@ export default function Page() {
                                 </div>
                               </div>
                                   <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
-                                    {canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                    <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
                                   {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                    </button> : null}
+                                    </button>
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   Last updated: {resultsUpdatedLabel}
                                 </div>
