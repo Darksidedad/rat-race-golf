@@ -778,7 +778,15 @@ export default function Page() {
       const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}`);
       const payload: EspnLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
-      await updateSession({ current_positions: payload.leaderboard, status: "scored" }, `Updated leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.`);
+      const { error } = await supabase.rpc("refresh_session_leaderboard", {
+        target_session_id: currentSession.id,
+        leaderboard: payload.leaderboard,
+        next_status: "scored",
+      });
+      if (error) throw error;
+      setStatusMessage(`Updated leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.`);
+      await loadSessions();
+      await loadSession(currentSession.id, false);
     } catch (error) {
       console.error(error);
       setStatusMessage("Could not update leaderboard results from ESPN.");

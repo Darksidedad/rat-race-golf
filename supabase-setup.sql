@@ -113,6 +113,28 @@ begin
 end;
 $$;
 
+create or replace function public.refresh_session_leaderboard(
+  target_session_id uuid,
+  leaderboard jsonb,
+  next_status text default 'scored'
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  update public.draft_sessions
+  set current_positions = coalesce(leaderboard, '{}'::jsonb),
+      status = coalesce(nullif(next_status, ''), status)
+  where id = target_session_id;
+end;
+$$;
+
 create or replace function public.assign_first_commissioner()
 returns trigger
 language plpgsql
