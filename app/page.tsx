@@ -1460,14 +1460,21 @@ export default function Page() {
                 {activeRoomTab === "profile" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <h3 className="m-0 font-[Georgia] text-xl">My Profile</h3>
-                        <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
-                      </div>
-                      <div className="grid gap-3 md:max-w-[520px]">
-                        <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={profileDraftName} onChange={(event) => setProfileDraftName(event.target.value)} placeholder="Display name" />
-                        <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={profileDraftTeam} onChange={(event) => setProfileDraftTeam(event.target.value)} placeholder="Claimed team name (optional)" />
-                        <div className="text-sm text-[#617061]">Your display name shows up around the league. Claimed team name helps the commissioner map your account to the right team.</div>
+                        <div className="mb-4 flex items-center justify-between gap-3">
+                          <h3 className="m-0 font-[Georgia] text-xl">My Profile</h3>
+                          <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                        </div>
+                        <div className="grid gap-3 md:max-w-[520px]">
+                        <label className="grid gap-1 text-sm text-[#617061]">
+                          <span className="font-medium text-[#1f2a1d]">Display Name</span>
+                          <input className="rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={profileDraftName} onChange={(event) => setProfileDraftName(event.target.value)} placeholder="Display name" />
+                          <span>This is the name everyone sees for your account around the league.</span>
+                        </label>
+                        <label className="grid gap-1 text-sm text-[#617061]">
+                          <span className="font-medium text-[#1f2a1d]">Claimed Team Name</span>
+                          <input className="rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={profileDraftTeam} onChange={(event) => setProfileDraftTeam(event.target.value)} placeholder="Claimed team name (optional)" />
+                          <span>Optional. This helps the commissioner connect your account to the correct team.</span>
+                        </label>
                         <button className="justify-self-start rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={saveProfile}>Save Profile</button>
                         <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
                           {busy || statusMessage}
