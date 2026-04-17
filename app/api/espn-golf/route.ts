@@ -103,19 +103,30 @@ function extractPlayerField(competitors: EspnCompetitor[]) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function displayGolfScore(raw: string | null | undefined) {
+  if (raw == null) return null;
+  const text = String(raw).trim().toUpperCase();
+  if (!text || text === "-") return null;
+  if (text === "EVEN") return "E";
+  return text;
+}
+
 function buildLeaderboard(competitors: EspnCompetitor[]) {
   const rankedPlayers = competitors
     .map((competitor) => ({
       name: competitor.athlete?.displayName ?? competitor.athlete?.fullName ?? "",
       score: fetchableScore(competitor),
+      total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
     }))
     .filter((entry) => entry.name.trim());
 
   const leaderboard: Record<string, number | null> = {};
+  const totals: Record<string, string | null> = {};
   let lastScore: number | null = null;
   let lastPosition = 0;
 
   rankedPlayers.forEach((entry, index) => {
+    totals[normalizeName(entry.name)] = entry.total;
     if (entry.score === null) {
       leaderboard[normalizeName(entry.name)] = null;
       return;
@@ -129,7 +140,7 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
     leaderboard[normalizeName(entry.name)] = lastPosition;
   });
 
-  return leaderboard;
+  return { positions: leaderboard, totals };
 }
 
 function parseOddsFromArticle(articleHtml: string) {
@@ -263,14 +274,16 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    if (action === "leaderboard") {
-      return NextResponse.json({
-        ok: true,
-        eventName,
-        leaderboard: buildLeaderboard(competitors),
-        source: scoreboardUrl,
-      });
-    }
+      if (action === "leaderboard") {
+        const liveLeaderboard = buildLeaderboard(competitors);
+        return NextResponse.json({
+          ok: true,
+          eventName,
+          leaderboard: liveLeaderboard.positions,
+          totals: liveLeaderboard.totals,
+          source: scoreboardUrl,
+        });
+      }
 
     return NextResponse.json({
       ok: false,

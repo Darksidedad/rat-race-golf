@@ -16,6 +16,7 @@ create table if not exists public.draft_sessions (
   player_input text not null default '',
   manual_leaderboard_input text not null default '',
   current_positions jsonb not null default '{}'::jsonb,
+  current_totals jsonb not null default '{}'::jsonb,
   status text not null default 'setup',
   commissioner_id uuid references public.profiles(id) on delete set null,
   created_at timestamptz not null default now(),
@@ -46,6 +47,7 @@ create table if not exists public.draft_picks (
 );
 
 alter table public.draft_sessions add column if not exists commissioner_id uuid references public.profiles(id) on delete set null;
+alter table public.draft_sessions add column if not exists current_totals jsonb not null default '{}'::jsonb;
 alter table public.draft_teams add column if not exists owner_user_id uuid references public.profiles(id) on delete set null;
 
 update public.draft_teams
@@ -116,6 +118,7 @@ $$;
 create or replace function public.refresh_session_leaderboard(
   target_session_id uuid,
   leaderboard jsonb,
+  totals jsonb default '{}'::jsonb,
   next_status text default 'scored'
 )
 returns void
@@ -130,6 +133,7 @@ begin
 
   update public.draft_sessions
   set current_positions = coalesce(leaderboard, '{}'::jsonb),
+      current_totals = coalesce(totals, '{}'::jsonb),
       status = coalesce(nullif(next_status, ''), status)
   where id = target_session_id;
 end;

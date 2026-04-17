@@ -14,6 +14,7 @@ type DraftSession = {
   player_input: string;
   manual_leaderboard_input: string | null;
   current_positions: Record<string, number | null> | null;
+  current_totals: Record<string, string | null> | null;
   status: string;
   commissioner_id: string | null;
   created_at: string;
@@ -24,7 +25,7 @@ type DraftPick = { id: string; session_id: string; team_id: string; player_name:
 type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "member"; created_at: string };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; error?: string };
-type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; error?: string };
+type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; error?: string };
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
   type RoomTab = "setup" | "admin" | "draft" | "results";
 type EditingPick = {
@@ -69,6 +70,15 @@ function parseManualLeaderboard(input: string) {
 
 function pointsForPosition(position: number | null) {
   return position === null || position < 1 ? 0 : Math.max(0, 51 - position);
+}
+
+function totalColorClass(total: string | null | undefined) {
+  const value = String(total ?? "").trim().toUpperCase();
+  if (!value) return "text-[#617061]";
+  if (value === "E") return "text-[#1a5c3a]";
+  if (value.startsWith("-")) return "text-[#9d2f2f]";
+  if (value.startsWith("+")) return "text-[#1f2a1d]";
+  return "text-[#1f2a1d]";
 }
 
 function getAssignedActiveTeams(teams: DraftTeam[]) {
@@ -279,10 +289,12 @@ export default function Page() {
   }, [assignedTeams, currentRound, currentTeamOnClock, draftComplete, picks, validDraftOrder]);
   const leaderboard = useMemo(() => {
     const positions = currentSession?.current_positions ?? {};
+    const totals = currentSession?.current_totals ?? {};
     return assignedTeams.map((team) => {
       const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
         const position = positions[pick.player_key] ?? null;
-        return { ...pick, position, points: pointsForPosition(position) };
+        const total = totals[pick.player_key] ?? null;
+        return { ...pick, position, total, points: pointsForPosition(position) };
       });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
       const countingKeys = new Set(
@@ -293,7 +305,7 @@ export default function Page() {
       );
       return { team, playerScores, total, countingKeys };
     }).sort((a, b) => b.total - a.total);
-  }, [assignedTeams, currentSession?.current_positions, picks]);
+  }, [assignedTeams, currentSession?.current_positions, currentSession?.current_totals, picks]);
   const resultsUpdatedLabel = useMemo(() => {
     if (!currentSession?.updated_at) return "Not updated yet";
     return new Date(currentSession.updated_at).toLocaleString();
@@ -661,7 +673,7 @@ export default function Page() {
     if (!trimmedName) return setStatusMessage("Type a tournament name before creating a session.");
     setBusy("Creating session...");
     const event = events.find((item) => item.id === newSessionEventId) ?? null;
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
+    const sessionInsert = await supabase.from("draft_sessions").insert([{ name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
@@ -781,6 +793,7 @@ export default function Page() {
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
+        totals: payload.totals ?? {},
         next_status: "scored",
       });
       if (error) throw error;
@@ -1392,7 +1405,10 @@ export default function Page() {
                               {!entry.playerScores.length ? <div className="text-[#617061]">No drafted golfers yet.</div> : entry.playerScores.map((player) => (
                                 <div key={player.id} className={`grid grid-cols-[1fr_auto] items-center gap-2 rounded-2xl px-3 py-2 ${entry.countingKeys.has(player.id) ? "bg-[#e0eee4]" : "bg-[#f4efe6]"}`}>
                                   <div className="min-w-0">
-                                    <div className="truncate font-medium leading-tight">{player.player_name}</div>
+                                    <div className="flex items-center gap-2">
+                                      <div className="truncate font-medium leading-tight">{player.player_name}</div>
+                                      {player.total ? <span className={`shrink-0 text-sm font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
+                                    </div>
                                     <div className="text-[11px] text-[#617061]">{player.position ? `P${player.position}` : "CUT / no finish"}</div>
                                   </div>
                                   <div className="text-right">
