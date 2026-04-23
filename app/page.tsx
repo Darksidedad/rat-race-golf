@@ -64,7 +64,7 @@ const INVALID_PLAYER_TERMS = [
 ];
 
 function normalizeName(name: string) {
-  return name.toLowerCase().replace(/\./g, "").replace(/['’]/g, "").replace(/\s+/g, " ").trim();
+  return name.toLowerCase().replace(/\./g, "").replace(/['’]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
 }
 
 function formatOdds(odds: number | null | undefined) {
@@ -97,10 +97,15 @@ function expandPlayerInput(input: string): PlayerPoolEntry[] {
       if (!cleanedLine) return [];
 
       const { line, odds } = extractAmericanOdds(cleanedLine);
-      return line
-        .split(/\s+(?:\/|&|\+|and)\s+|,\s*(?=[A-Z])/i)
+      const draftEntries = line.includes("/") ? [line] : line.split(/,\s*(?=[A-Z])/i);
+      return draftEntries
         .map((entry) => ({
-          name: entry.replace(/^[\s\-\u2022*|#.\d]+/, " ").replace(/[\s*|]+$/g, "").trim(),
+          name: entry
+            .replace(/^[\s\-\u2022*|#.\d]+/, " ")
+            .replace(/\s*\/\s*/g, " / ")
+            .replace(/[\s*|]+$/g, "")
+            .replace(/\s+/g, " ")
+            .trim(),
           odds,
         }))
         .filter((entry) => entry.name);
@@ -167,10 +172,13 @@ function statusLabel(status: string) {
 
 function isValidPlayerName(player: string) {
   const key = normalizeName(player);
+  const parts = player.split(/\s*\/\s*/).map((part) => part.trim()).filter(Boolean);
   if (!player) return false;
-  if (player.length < 4 || player.length > 40) return false;
+  if (player.length < 4 || player.length > 80) return false;
   if (!/[a-z]/i.test(player) || /\d/.test(player)) return false;
-  if (player.split(" ").length < 2 || player.split(" ").length > 4) return false;
+  if (parts.length > 2) return false;
+  if (parts.length === 2 && !parts.every((part) => part.split(" ").length >= 2 && part.split(" ").length <= 4)) return false;
+  if (parts.length === 1 && (player.split(" ").length < 2 || player.split(" ").length > 4)) return false;
   return !INVALID_PLAYER_TERMS.some((term) => key.includes(term));
 }
 
@@ -227,6 +235,27 @@ function lookupOddsForPlayer(playerName: string, oddsMap: Record<string, number>
   });
 
   return matchedKey ? oddsMap[matchedKey] : undefined;
+}
+
+function teamLastNameSignature(name: string) {
+  const parts = normalizeName(name)
+    .split("/")
+    .map((part) => part.trim().split(" ").filter(Boolean).at(-1))
+    .filter(Boolean)
+    .sort();
+
+  return parts.length > 1 ? parts.join("/") : null;
+}
+
+function lookupLeaderboardValue<T>(playerName: string, values: Record<string, T>) {
+  const key = normalizeName(playerName);
+  if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+
+  const signature = teamLastNameSignature(playerName);
+  if (!signature) return undefined;
+
+  const matchedKey = Object.keys(values).find((valueKey) => teamLastNameSignature(valueKey) === signature);
+  return matchedKey ? values[matchedKey] : undefined;
 }
 
 export default function Page() {
@@ -407,12 +436,12 @@ export default function Page() {
   const leaderboard = useMemo(() => {
     const positions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
-    return assignedTeams.map((team) => {
-      const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
-        const position = positions[pick.player_key] ?? null;
-        const total = totals[pick.player_key] ?? null;
-        return { ...pick, position, total, points: pointsForPosition(position) };
-      });
+      return assignedTeams.map((team) => {
+        const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
+        const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+        const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+          return { ...pick, position, total, points: pointsForPosition(position) };
+        });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
       const countingKeys = new Set(
         [...playerScores]
@@ -650,11 +679,11 @@ export default function Page() {
       const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
       const positions = session.current_positions ?? {};
 
-      const sessionLeaderboard = sessionTeams.map((team) => {
-        const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
-          const position = positions[pick.player_key] ?? null;
-          return pointsForPosition(position);
-        });
+        const sessionLeaderboard = sessionTeams.map((team) => {
+          const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
+            const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+            return pointsForPosition(position);
+          });
         const total = [...playerScores].sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
         return { teamName: team.name, total };
       }).sort((a, b) => b.total - a.total);

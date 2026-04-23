@@ -5,6 +5,11 @@ type EspnCompetitor = {
     displayName?: string;
     fullName?: string;
   };
+  team?: {
+    displayName?: string;
+    name?: string;
+    shortDisplayName?: string;
+  };
   score?: string | null;
   linescores?: Array<{
     displayValue?: string | null;
@@ -31,10 +36,20 @@ function decodeHtmlText(text: string) {
 function normalizeName(name: string) {
   return name
     .toLowerCase()
+    .replace(/\s*\/\s*/g, "/")
     .replace(/\./g, "")
     .replace(/['’]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function competitorName(competitor: EspnCompetitor) {
+  return competitor.athlete?.displayName
+    ?? competitor.athlete?.fullName
+    ?? competitor.team?.displayName
+    ?? competitor.team?.name
+    ?? competitor.team?.shortDisplayName
+    ?? "";
 }
 
 function normalizeGolfScore(raw: string | null | undefined) {
@@ -135,13 +150,17 @@ function extractPlayerFieldFromLeaderboardHtml(html: string) {
       .trim();
     if (!line.includes("/")) continue;
 
-    for (const name of line.split(/\s*\/\s*/)) {
-      const player = name.replace(/\*+$/g, "").trim();
-      const key = normalizeName(player);
-      if (!player || seen.has(key)) continue;
-      seen.add(key);
-      players.push(player);
-    }
+    const team = line
+      .replace(/\*+/g, "")
+      .split(/\s*\/\s*/)
+      .map((player) => player.trim())
+      .filter(Boolean)
+      .slice(0, 2)
+      .join(" / ");
+    const key = normalizeName(team);
+    if (!team || seen.has(key)) continue;
+    seen.add(key);
+    players.push(team);
   }
 
   return players.sort((a, b) => a.localeCompare(b));
@@ -158,7 +177,7 @@ function displayGolfScore(raw: string | null | undefined) {
 function buildLeaderboard(competitors: EspnCompetitor[]) {
   const rankedPlayers = competitors
     .map((competitor) => ({
-      name: competitor.athlete?.displayName ?? competitor.athlete?.fullName ?? "",
+      name: competitorName(competitor),
       score: fetchableScore(competitor),
       total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
     }))
