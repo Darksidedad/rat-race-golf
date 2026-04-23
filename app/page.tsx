@@ -177,7 +177,7 @@ function isValidPlayerName(player: string) {
   if (player.length < 4 || player.length > 80) return false;
   if (!/[a-z]/i.test(player) || /\d/.test(player)) return false;
   if (parts.length > 2) return false;
-  if (parts.length === 2 && !parts.every((part) => part.split(" ").length >= 2 && part.split(" ").length <= 4)) return false;
+  if (parts.length === 2 && !parts.every((part) => part.split(" ").length >= 1 && part.split(" ").length <= 4)) return false;
   if (parts.length === 1 && (player.split(" ").length < 2 || player.split(" ").length > 4)) return false;
   return !INVALID_PLAYER_TERMS.some((term) => key.includes(term));
 }
@@ -223,6 +223,12 @@ function formatPlayerPoolInput(input: string) {
 function lookupOddsForPlayer(playerName: string, oddsMap: Record<string, number>) {
   const key = normalizeName(playerName);
   if (Number.isFinite(oddsMap[key])) return oddsMap[key];
+
+  const signature = teamLastNameSignature(playerName);
+  if (signature) {
+    const teamMatchedKey = Object.keys(oddsMap).find((oddsKey) => teamLastNameSignature(oddsKey) === signature);
+    if (teamMatchedKey) return oddsMap[teamMatchedKey];
+  }
 
   const parts = key.split(" ");
   if (parts.length < 2 || parts[0].length !== 1) return undefined;
@@ -1483,12 +1489,26 @@ export default function Page() {
                           <option value="">No event selected</option>
                           {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
                         </select>
-                    <div className="flex flex-wrap gap-3">
-                      <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={importFieldFromEspn}>Import ESPN Field</button>
-                      <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={savePlayerPool}>Save Player Pool</button>
+                      <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h3 className="m-0 font-[Georgia] text-xl">Player Pool And Odds</h3>
+                            <div className="mt-1 text-sm text-[#617061]">
+                              Import the ESPN field, then paste or edit odds next to each golfer/team. These odds control the draft list order.
+                            </div>
+                          </div>
+                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{allPlayers.length} draftable</span>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={importFieldFromEspn}>Import ESPN Field</button>
+                          <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={savePlayerPool}>Save Player Pool & Odds</button>
+                        </div>
+                        <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
+                        <div className="text-sm text-[#617061]">
+                          For team events, keep both players on the same line with a slash so they draft together.
+                        </div>
                       </div>
-                      <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder="One golfer per line" />
-                      <div className="my-1 h-px bg-black/10" />
+                        <div className="my-1 h-px bg-black/10" />
                       <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(420px,1.15fr)]">
                         <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
                           <div className="flex items-center justify-between gap-3">
