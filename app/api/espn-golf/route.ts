@@ -336,7 +336,9 @@ export async function GET(req: NextRequest) {
     const competitors = extractCompetitors(scoreboardJson, eventId);
     const eventName = event?.name ?? undefined;
 
-    if (!competitors.length && action === "field" && eventId) {
+    const scoreboardPlayers = extractPlayerField(competitors);
+
+    if (action === "field" && eventId && (!competitors.length || !scoreboardPlayers.length)) {
       const page = await fetchLeaderboardHtmlForEvent(eventId);
       const players = page ? extractPlayerFieldFromLeaderboardHtml(page.html) : [];
 
@@ -358,10 +360,17 @@ export async function GET(req: NextRequest) {
     }
 
     if (action === "field") {
+      if (!scoreboardPlayers.length) {
+        return NextResponse.json({
+          ok: false,
+          error: "ESPN has the event, but did not publish player names in the live feed yet.",
+        });
+      }
+
       return NextResponse.json({
         ok: true,
         eventName,
-        players: extractPlayerField(competitors),
+        players: scoreboardPlayers,
         source: scoreboardUrl,
       });
     }

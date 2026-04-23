@@ -1034,7 +1034,7 @@ export default function Page() {
     try {
         const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(currentSession.event_id)}`);
         const payload: EspnFieldResponse = await response.json();
-        if (!payload.ok || !payload.players) throw new Error(payload.error);
+        if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
         const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
         if (!cleanedPlayers.length) throw new Error("ESPN returned a field, but no valid golfer names were found.");
         const playerInput = formatPlayerPoolInput(payload.players.join("\n"));
