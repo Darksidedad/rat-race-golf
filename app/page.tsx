@@ -269,16 +269,14 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`rrg-brand ${compact ? "rrg-brand--compact" : ""}`} aria-label="Rat Race Golf">
       <div className="rrg-brand__badge">
-        <span className="rrg-brand__hole" />
+        <span className="rrg-brand__monogram">RR</span>
+        <span className="rrg-brand__pin" />
       </div>
       <div className="rrg-brand__text">
-        <div className="rrg-brand__eyebrow">Fantasy PGA Draft Room</div>
+        <div className="rrg-brand__eyebrow">Private Fantasy Golf League</div>
         <div className="rrg-brand__name">
-          <span>Rat Race Go</span>
-          <span className="rrg-brand__flag-l" aria-hidden="true">
-            <span className="rrg-brand__flag" />
-          </span>
-          <span>f</span>
+          <span>Rat Race</span>
+          <span className="rrg-brand__accent">Golf</span>
         </div>
       </div>
     </div>
