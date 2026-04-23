@@ -97,7 +97,8 @@ function expandPlayerInput(input: string): PlayerPoolEntry[] {
       if (!cleanedLine) return [];
 
       const { line, odds } = extractAmericanOdds(cleanedLine);
-      const draftEntries = line.includes("/") ? [line] : line.split(/,\s*(?=[A-Z])/i);
+      const teamLine = line.replace(/\s+(?:&|and)\s+/gi, " / ");
+      const draftEntries = teamLine.includes("/") ? [teamLine] : teamLine.split(/,\s*(?=[A-Z])/i);
       return draftEntries
         .map((entry) => ({
           name: entry
