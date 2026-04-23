@@ -265,6 +265,26 @@ function lookupLeaderboardValue<T>(playerName: string, values: Record<string, T>
   return matchedKey ? values[matchedKey] : undefined;
 }
 
+function BrandMark({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={`rrg-brand ${compact ? "rrg-brand--compact" : ""}`} aria-label="Rat Race Golf">
+      <div className="rrg-brand__badge">
+        <span className="rrg-brand__hole" />
+      </div>
+      <div className="rrg-brand__text">
+        <div className="rrg-brand__eyebrow">Fantasy PGA Draft Room</div>
+        <div className="rrg-brand__name">
+          <span>Rat Race Go</span>
+          <span className="rrg-brand__flag-l" aria-hidden="true">
+            <span className="rrg-brand__flag" />
+          </span>
+          <span>f</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Page() {
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
@@ -1316,11 +1336,11 @@ export default function Page() {
 
   if (passwordResetMode) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+      <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
         <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
-          <div className="grid w-full gap-5 rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+          <div className="rrg-card grid w-full gap-5 rounded-[2rem] p-8">
             <div>
-              <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+              <BrandMark compact />
               <p className="mb-0 mt-4 text-[#617061]">Set your new password below, then jump back into the league.</p>
             </div>
             <div className="grid gap-3">
@@ -1341,10 +1361,10 @@ export default function Page() {
 
   if (!authChecked) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+      <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
         <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
-          <div className="w-full rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
-            <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+          <div className="rrg-card w-full rounded-[2rem] p-8">
+            <BrandMark compact />
             <p className="mb-0 mt-4 text-[#617061]">Loading your league access...</p>
           </div>
         </div>
@@ -1354,11 +1374,11 @@ export default function Page() {
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
+      <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
         <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
-          <div className="grid w-full gap-5 rounded-[2rem] border border-white/80 bg-white/85 p-8 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+          <div className="rrg-card grid w-full gap-5 rounded-[2rem] p-8">
             <div>
-              <h1 className="m-0 font-[Georgia] text-5xl">Rat Race Golf</h1>
+              <BrandMark compact />
               <p className="mb-0 mt-4 text-[#617061]">
                 Create an account to draft for your team, follow live results, and review past tournaments. The first account created becomes the commissioner automatically.
               </p>
@@ -1394,9 +1414,9 @@ export default function Page() {
   }
 
   return (
-    <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#ebe3d5_100%)] px-4 py-6 text-[#1f2a1d] xl:px-6">
-        <div className="mx-auto mb-5 flex max-w-[1880px] flex-wrap items-start justify-between gap-4">
-          <h1 className="my-2 font-[Georgia] text-5xl leading-none md:text-7xl">Rat Race Golf</h1>
+    <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="rrg-topbar mx-auto mb-5 flex max-w-[1880px] flex-wrap items-center justify-between gap-4 rounded-[2rem] px-5 py-4">
+          <BrandMark />
             <div className="grid justify-items-end gap-2">
               <div className="flex flex-wrap justify-end gap-2 text-xs">
                 <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
@@ -1409,7 +1429,7 @@ export default function Page() {
         </div>
 
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
-        <section className="rounded-3xl border border-white/80 bg-white/80 p-5 shadow-[0_18px_45px_rgba(74,57,28,0.12)] lg:sticky lg:top-4">
+        <section className="rrg-card rounded-3xl p-5 lg:sticky lg:top-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <h2 className="m-0 font-[Georgia] text-2xl">{canManageLeague ? "New Draft" : "League Hub"}</h2>
             <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{sessions.length} saved</span>
@@ -1443,7 +1463,7 @@ export default function Page() {
             </div>
         </section>
 
-        <section className="rounded-3xl border border-white/80 bg-white/80 p-5 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+        <section className="rrg-card rounded-3xl p-5">
             <div className="mb-4 flex items-center justify-between gap-3">
               <h2 className="m-0 font-[Georgia] text-2xl">{currentSession ? currentSession.name : "Pick a session"}</h2>
               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
