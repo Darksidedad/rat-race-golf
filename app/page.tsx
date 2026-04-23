@@ -1655,52 +1655,64 @@ export default function Page() {
                         {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button> : null}
                           {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                       </div>
-                      <div className="grid items-start gap-5 xl:grid-cols-[minmax(290px,0.7fr)_minmax(760px,1.3fr)] 2xl:grid-cols-[minmax(310px,0.62fr)_minmax(980px,1.38fr)]">
-                        <div className="grid content-start self-start gap-3">
+                        <div className="grid items-start gap-5 xl:grid-cols-[minmax(330px,0.75fr)_minmax(0,1.25fr)] 2xl:grid-cols-[minmax(360px,0.7fr)_minmax(0,1.3fr)]">
+                          <div className="grid content-start self-start gap-3">
                           <div className="flex items-center justify-between gap-3">
                             <h3 className="m-0 font-[Georgia] text-xl">Available Golfers</h3>
                             <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
                             {oddsSource || Object.keys(playerPoolOdds).length ? <div className="text-xs text-[#617061]">Ordered by win odds, lowest odds first. Odds can come from CBS Sports or your imported list.</div> : null}
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
-                          <div className="grid max-h-[420px] content-start gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
+                          <div className="grid max-h-[520px] content-start gap-2 overflow-y-auto overflow-x-hidden rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
                             {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => (
-                              <div key={player} className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium">{player}</div>
-                                    <div className="text-[11px] text-[#617061]">{playerOddsLabel(player) ? `Odds ${playerOddsLabel(player)}` : "Odds unavailable"}</div>
-                                </div>
+                              <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
+                                  <div className="min-w-0">
+                                    <div className="whitespace-normal break-words font-medium leading-tight">{player}</div>
+                                      <div className="text-[11px] text-[#617061]">{playerOddsLabel(player) ? `Odds ${playerOddsLabel(player)}` : "Odds unavailable"}</div>
+                                  </div>
                                   <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="grid gap-3">
-                          <h3 className="m-0 font-[Georgia] text-xl">Draft Board</h3>
-                          <div className="grid gap-3 overflow-auto pr-2">
+                          <div className="grid min-w-0 gap-3">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <h3 className="m-0 font-[Georgia] text-xl">Draft Board</h3>
+                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Snake order</span>
+                          </div>
+                          <div className="rounded-3xl border border-[#1a5c3a]/15 bg-[#e0eee4] p-4 text-[#1a5c3a]">
+                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#28523e]">{draftComplete ? "Draft Complete" : "On The Clock"}</div>
+                            <div className="mt-1 font-[Georgia] text-3xl leading-tight">{draftComplete ? "All picks are in" : currentTeamOnClock?.name ?? "Set draft order"}</div>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
+                              <span className="rounded-full bg-white/70 px-3 py-1">Round {draftComplete ? ROUNDS : currentRound || 0}</span>
+                              <span className="rounded-full bg-white/70 px-3 py-1">Pick {totalPicks ? `${Math.min(picks.length + 1, totalPicks)} / ${totalPicks}` : "0 / 0"}</span>
+                              <span className="rounded-full bg-white/70 px-3 py-1">{currentRound % 2 === 0 ? "Snake moving right to left" : "Snake moving left to right"}</span>
+                            </div>
+                          </div>
+                            <div className="grid gap-4 overflow-x-hidden pr-0">
                             {!assignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Set the draft order before using the board.</div> : draftBoardRounds.map((round) => (
-                              <div key={round.roundNumber} className="grid gap-2">
-                                <div className="flex items-center gap-3">
-                                  <div className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#6a5940]">Round {round.roundNumber}</div>
-                                  <div className="text-sm text-[#617061]">{round.roundNumber % 2 === 1 ? "Left to right" : "Right to left"}</div>
-                                </div>
-                                  <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${Math.max(round.cells.length, 1)}, minmax(136px, 1fr))` }}>
-                                    {round.cells.map(({ team, pick, overallPick, isOnClock }) => (
-                                      <div key={`${round.roundNumber}-${team.id}`} className={`grid min-h-[120px] content-start gap-2 rounded-2xl border p-3 ${isOnClock ? "border-[#1a5c3a]/60 bg-[#e0eee4]" : "border-black/10 bg-white/85"}`}>
-                                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                                          <div className="min-w-0">
-                                            <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">Pick {overallPick}</div>
+                                <div key={round.roundNumber} className="grid gap-2">
+                                  <div className="flex items-center gap-3">
+                                    <div className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#6a5940]">Round {round.roundNumber}</div>
+                                    <div className="text-sm text-[#617061]">{round.roundNumber % 2 === 1 ? "Snake moving left to right" : "Snake moving right to left"}</div>
+                                  </div>
+                                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                                      {round.cells.map(({ team, pick, overallPick, isOnClock }) => (
+                                      <div key={`${round.roundNumber}-${team.id}`} className={`grid min-h-[118px] content-start gap-2 rounded-2xl border p-3 ${isOnClock ? "border-[#1a5c3a]/60 bg-[#e0eee4] shadow-[0_12px_26px_rgba(26,92,58,0.16)]" : "border-black/10 bg-white/85"}`}>
+                                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                                            <div className="min-w-0">
+                                              <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">Pick {overallPick}</div>
                                             <strong className="block text-sm leading-tight">{team.name}</strong>
                                           </div>
                                           {isOnClock ? <span className="rounded-full bg-[#1a5c3a] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">On Clock</span> : null}
                                         </div>
-                                          {pick ? (
-                                            <div className="grid gap-2">
-                                            <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">
-                                              <div>{pick.player_name}</div>
-                                              {playerOddsLabel(pick.player_name) ? <div className="mt-1 text-[11px] font-semibold text-[#617061]">Odds {playerOddsLabel(pick.player_name)}</div> : null}
-                                            </div>
+                                            {pick ? (
+                                              <div className="grid gap-2">
+                                              <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">
+                                                <div className="whitespace-normal break-words">{pick.player_name}</div>
+                                                {playerOddsLabel(pick.player_name) ? <div className="mt-1 text-[11px] font-semibold text-[#617061]">Odds {playerOddsLabel(pick.player_name)}</div> : null}
+                                              </div>
                                               {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
                                             </div>
                                         ) : (
