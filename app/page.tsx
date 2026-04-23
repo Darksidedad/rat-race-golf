@@ -24,9 +24,10 @@ type DraftTeam = { id: string; session_id: string; name: string; draft_slot: num
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
 type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "member"; created_at: string };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
-type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; error?: string };
+type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; source?: string; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; error?: string };
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
+type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
 type EditingPick = {
   id: string;
@@ -64,6 +65,46 @@ const INVALID_PLAYER_TERMS = [
 
 function normalizeName(name: string) {
   return name.toLowerCase().replace(/\./g, "").replace(/['’]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function formatOdds(odds: number | null | undefined) {
+  if (!Number.isFinite(odds)) return null;
+  return odds && odds > 0 ? `+${odds}` : String(odds);
+}
+
+function extractAmericanOdds(line: string) {
+  const match = line.match(/(?:^|\s)([+-]\d{3,6})(?=\s|$)/);
+  if (!match) return { line, odds: undefined };
+  const odds = Number(match[1]);
+  return {
+    line: line.replace(match[0], " ").replace(/\s+/g, " ").trim(),
+    odds: Number.isFinite(odds) ? odds : undefined,
+  };
+}
+
+function expandPlayerInput(input: string): PlayerPoolEntry[] {
+  return input
+    .split(/\n|;/)
+    .flatMap((rawLine) => {
+      const cleanedLine = rawLine
+        .replace(/\([^)]*\)/g, " ")
+        .replace(/\b\d{1,2}:\d{2}\s*(?:AM|PM)?\*?\b/gi, " ")
+        .replace(/\b(?:AM|PM|TEAM|TEE TIME|Tournament Field|Auto Update:On)\b/gi, " ")
+        .replace(/^[\s\-\u2022*|#.\d]+/, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!cleanedLine) return [];
+
+      const { line, odds } = extractAmericanOdds(cleanedLine);
+      return line
+        .split(/\s+(?:\/|&|\+|and)\s+|,\s*(?=[A-Z])/i)
+        .map((entry) => ({
+          name: entry.replace(/^[\s\-\u2022*|#.\d]+/, " ").replace(/[\s*|]+$/g, "").trim(),
+          odds,
+        }))
+        .filter((entry) => entry.name);
+    });
 }
 
 function parseManualLeaderboard(input: string) {
@@ -124,25 +165,68 @@ function statusLabel(status: string) {
   return status.replace(/[_-]/g, " ");
 }
 
-function sanitizePlayerNames(players: string[]) {
-  const seen = new Set<string>();
-  const cleaned: string[] = [];
+function isValidPlayerName(player: string) {
+  const key = normalizeName(player);
+  if (!player) return false;
+  if (player.length < 4 || player.length > 40) return false;
+  if (!/[a-z]/i.test(player) || /\d/.test(player)) return false;
+  if (player.split(" ").length < 2 || player.split(" ").length > 4) return false;
+  return !INVALID_PLAYER_TERMS.some((term) => key.includes(term));
+}
 
-  for (const rawPlayer of players) {
-    const player = rawPlayer.replace(/\s+/g, " ").trim();
+function parsePlayerPoolEntries(input: string) {
+  const seen = new Set<string>();
+  const cleaned: PlayerPoolEntry[] = [];
+
+  for (const entry of expandPlayerInput(input)) {
+    const player = entry.name.replace(/\s+/g, " ").trim();
     const key = normalizeName(player);
 
-    if (!player || seen.has(key)) continue;
-    if (player.length < 4 || player.length > 40) continue;
-    if (!/[a-z]/i.test(player) || /\d/.test(player)) continue;
-    if (player.split(" ").length < 2 || player.split(" ").length > 4) continue;
-    if (INVALID_PLAYER_TERMS.some((term) => key.includes(term))) continue;
+    if (seen.has(key) || !isValidPlayerName(player)) continue;
 
     seen.add(key);
-    cleaned.push(player);
+    cleaned.push({ name: player, odds: entry.odds });
   }
 
   return cleaned;
+}
+
+function parsePlayerPoolInput(input: string) {
+  return parsePlayerPoolEntries(input).map((entry) => entry.name);
+}
+
+function parsePlayerPoolOdds(input: string) {
+  return Object.fromEntries(
+    parsePlayerPoolEntries(input)
+      .filter((entry): entry is PlayerPoolEntry & { odds: number } => Number.isFinite(entry.odds))
+      .map((entry) => [normalizeName(entry.name), entry.odds])
+  );
+}
+
+function formatPlayerPoolInput(input: string) {
+  return parsePlayerPoolEntries(input)
+    .map((entry) => {
+      const odds = formatOdds(entry.odds);
+      return odds ? `${entry.name} ${odds}` : entry.name;
+    })
+    .join("\n");
+}
+
+function lookupOddsForPlayer(playerName: string, oddsMap: Record<string, number>) {
+  const key = normalizeName(playerName);
+  if (Number.isFinite(oddsMap[key])) return oddsMap[key];
+
+  const parts = key.split(" ");
+  if (parts.length < 2 || parts[0].length !== 1) return undefined;
+
+  const firstInitial = parts[0];
+  const lastName = parts[parts.length - 1];
+  const matchedKey = Object.keys(oddsMap).find((oddsKey) => {
+    const oddsParts = oddsKey.split(" ");
+    return oddsParts[0]?.startsWith(firstInitial) && oddsParts[oddsParts.length - 1] === lastName;
+  });
+
+  return matchedKey ? oddsMap[matchedKey] : undefined;
 }
 
 export default function Page() {
@@ -287,16 +371,20 @@ export default function Page() {
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
   const currentTeamOnClock = useMemo(() => (validDraftOrder ? getCurrentTeamOnClock(teams, picks) : null), [teams, picks, validDraftOrder]);
   const draftedKeys = useMemo(() => new Set(picks.map((pick) => pick.player_key)), [picks]);
-  const allPlayers = useMemo(() => sanitizePlayerNames(playerPoolDraft.split("\n")), [playerPoolDraft]);
+    const allPlayers = useMemo(() => parsePlayerPoolInput(playerPoolDraft), [playerPoolDraft]);
+    const playerPoolOdds = useMemo(() => parsePlayerPoolOdds(playerPoolDraft), [playerPoolDraft]);
+    const displayOddsByPlayer = useMemo(() => ({ ...oddsByPlayer, ...playerPoolOdds }), [oddsByPlayer, playerPoolOdds]);
+    const playerOddsValue = (playerName: string) => lookupOddsForPlayer(playerName, displayOddsByPlayer);
+    const playerOddsLabel = (playerName: string) => formatOdds(playerOddsValue(playerName));
   const availablePlayers = useMemo(() => allPlayers
-    .filter((player) => !draftedKeys.has(normalizeName(player)))
-    .filter((player) => player.toLowerCase().includes(deferredFilter.toLowerCase()))
-    .sort((a, b) => {
-      const aOdds = oddsByPlayer[normalizeName(a)] ?? Number.POSITIVE_INFINITY;
-      const bOdds = oddsByPlayer[normalizeName(b)] ?? Number.POSITIVE_INFINITY;
+      .filter((player) => !draftedKeys.has(normalizeName(player)))
+      .filter((player) => player.toLowerCase().includes(deferredFilter.toLowerCase()))
+      .sort((a, b) => {
+      const aOdds = lookupOddsForPlayer(a, displayOddsByPlayer) ?? Number.POSITIVE_INFINITY;
+      const bOdds = lookupOddsForPlayer(b, displayOddsByPlayer) ?? Number.POSITIVE_INFINITY;
       if (aOdds !== bOdds) return aOdds - bOdds;
       return a.localeCompare(b);
-    }), [allPlayers, draftedKeys, deferredFilter, oddsByPlayer]);
+    }), [allPlayers, draftedKeys, deferredFilter, displayOddsByPlayer]);
   const unassignedTeams = useMemo(() => teams.filter((team) => team.draft_slot === null).sort((a, b) => a.name.localeCompare(b.name)), [teams]);
   const totalPicks = assignedTeams.length * ROUNDS;
   const draftComplete = totalPicks > 0 && picks.length >= totalPicks;
@@ -925,14 +1013,18 @@ export default function Page() {
     await loadSession(selectedSessionId, false);
   }
 
-  async function savePlayerPool() {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can save the player pool.");
-    setBusy("Saving player pool...");
-    const cleanedPlayers = sanitizePlayerNames(playerPoolDraft.split("\n"));
-    const cleanedPlayerInput = cleanedPlayers.join("\n");
-    setPlayerPoolDraft(cleanedPlayerInput);
-    await updateSession({ player_input: cleanedPlayerInput }, `Saved ${cleanedPlayers.length} golfers in the player pool.`);
-    setBusy("");
+    async function savePlayerPool() {
+      if (!canManageLeague) return setStatusMessage("Only the commissioner can save the player pool.");
+      setBusy("Saving player pool...");
+      const cleanedPlayers = parsePlayerPoolInput(playerPoolDraft);
+      if (!cleanedPlayers.length) {
+        setBusy("");
+        return setStatusMessage("I could not find any valid golfer names. Paste one player per line, or team pairs like Rory McIlroy / Shane Lowry.");
+      }
+      const cleanedPlayerInput = formatPlayerPoolInput(playerPoolDraft);
+      setPlayerPoolDraft(cleanedPlayerInput);
+      await updateSession({ player_input: cleanedPlayerInput }, `Saved ${cleanedPlayers.length} golfers in the player pool.`);
+      setBusy("");
   }
 
   async function importFieldFromEspn() {
@@ -940,19 +1032,20 @@ export default function Page() {
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before importing the field.");
     setBusy("Importing field...");
     try {
-      const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(currentSession.event_id)}`);
-      const payload: EspnFieldResponse = await response.json();
-      if (!payload.ok || !payload.players) throw new Error(payload.error);
-      const cleanedPlayers = sanitizePlayerNames(payload.players);
-      const playerInput = cleanedPlayers.join("\n");
-      setPlayerPoolDraft(playerInput);
-      await updateSession({ player_input: playerInput, event_name: payload.eventName ?? currentSession.event_name }, `Imported ${cleanedPlayers.length} golfers from ESPN after cleaning duplicates and invalid rows.`);
-    } catch (error) {
-      console.error(error);
-      setStatusMessage("Could not import the player field from ESPN.");
+        const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(currentSession.event_id)}`);
+        const payload: EspnFieldResponse = await response.json();
+        if (!payload.ok || !payload.players) throw new Error(payload.error);
+        const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
+        if (!cleanedPlayers.length) throw new Error("ESPN returned a field, but no valid golfer names were found.");
+        const playerInput = formatPlayerPoolInput(payload.players.join("\n"));
+        setPlayerPoolDraft(playerInput);
+        await updateSession({ player_input: playerInput, event_name: payload.eventName ?? currentSession.event_name }, `Imported ${cleanedPlayers.length} golfers from ESPN after cleaning duplicates, team rows, and invalid rows.`);
+      } catch (error) {
+        console.error(error);
+        setStatusMessage(error instanceof Error && error.message ? error.message : "Could not import the player field from ESPN.");
+      }
+      setBusy("");
     }
-    setBusy("");
-  }
 
   async function pullLeaderboard() {
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
@@ -1518,14 +1611,14 @@ export default function Page() {
                             <h3 className="m-0 font-[Georgia] text-xl">Available Golfers</h3>
                             <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
-                          {oddsSource ? <div className="text-xs text-[#617061]">Ordered by CBS Sports win odds, lowest odds first.</div> : null}
+                            {oddsSource || Object.keys(playerPoolOdds).length ? <div className="text-xs text-[#617061]">Ordered by win odds, lowest odds first. Odds can come from CBS Sports or your imported list.</div> : null}
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
                           <div className="grid max-h-[420px] content-start gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
                             {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => (
                               <div key={player} className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
                                 <div className="min-w-0">
                                   <div className="truncate font-medium">{player}</div>
-                                  <div className="text-[11px] text-[#617061]">{oddsByPlayer[normalizeName(player)] ? `CBS odds +${oddsByPlayer[normalizeName(player)]}` : "Odds unavailable"}</div>
+                                    <div className="text-[11px] text-[#617061]">{playerOddsLabel(player) ? `Odds ${playerOddsLabel(player)}` : "Odds unavailable"}</div>
                                 </div>
                                   <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
                               </div>
@@ -1552,11 +1645,14 @@ export default function Page() {
                                           </div>
                                           {isOnClock ? <span className="rounded-full bg-[#1a5c3a] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">On Clock</span> : null}
                                         </div>
-                                        {pick ? (
-                                          <div className="grid gap-2">
-                                            <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">{pick.player_name}</div>
-                                            {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
-                                          </div>
+                                          {pick ? (
+                                            <div className="grid gap-2">
+                                            <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">
+                                              <div>{pick.player_name}</div>
+                                              {playerOddsLabel(pick.player_name) ? <div className="mt-1 text-[11px] font-semibold text-[#617061]">Odds {playerOddsLabel(pick.player_name)}</div> : null}
+                                            </div>
+                                              {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
+                                            </div>
                                         ) : (
                                           <div className={`rounded-xl px-3 py-2 text-sm leading-tight ${isOnClock ? "bg-white text-[#1a5c3a] font-semibold" : "bg-[#f7f2e9] text-[#617061]"}`}>
                                             {isOnClock ? "Drafting now" : "Waiting"}

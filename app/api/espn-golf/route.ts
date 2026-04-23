@@ -17,6 +17,17 @@ type EventOption = {
   name: string;
 };
 
+function decodeHtmlText(text: string) {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, " ")
+    .replace(/&apos;/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function normalizeName(name: string) {
   return name
     .toLowerCase()
@@ -103,6 +114,39 @@ function extractPlayerField(competitors: EspnCompetitor[]) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function extractPlayerFieldFromLeaderboardHtml(html: string) {
+  const text = html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<\/td>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\r/g, "\n");
+  const fieldStart = text.indexOf("Tournament Field");
+  const glossaryStart = text.indexOf("Glossary", fieldStart);
+  const fieldText = fieldStart >= 0 ? text.slice(fieldStart, glossaryStart > fieldStart ? glossaryStart : undefined) : text;
+  const seen = new Set<string>();
+  const players: string[] = [];
+
+  for (const rawLine of fieldText.split("\n")) {
+    const line = decodeHtmlText(rawLine)
+      .replace(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\*?\b/gi, " ")
+      .replace(/\bTEAM\b|\bTEE TIME\b|\bAuto Update:On\b/gi, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!line.includes("/")) continue;
+
+    for (const name of line.split(/\s*\/\s*/)) {
+      const player = name.replace(/\*+$/g, "").trim();
+      const key = normalizeName(player);
+      if (!player || seen.has(key)) continue;
+      seen.add(key);
+      players.push(player);
+    }
+  }
+
+  return players.sort((a, b) => a.localeCompare(b));
+}
+
 function displayGolfScore(raw: string | null | undefined) {
   if (raw == null) return null;
   const text = String(raw).trim().toUpperCase();
@@ -162,6 +206,18 @@ function parseOddsFromArticle(articleHtml: string) {
     if (!odds.has(key)) odds.set(key, value);
   }
 
+  const teamRegex = /([A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){1,3})\s*(?:\/|&|and)\s*([A-Z][A-Za-z.'\-]+(?:\s+[A-Z][A-Za-z.'\-]+){1,3})\s+\+(\d{3,6})/g;
+  for (const match of normalized.matchAll(teamRegex)) {
+    const value = Number(match[3]);
+    if (!Number.isFinite(value)) continue;
+
+    for (const name of [match[1], match[2]]) {
+      const playerName = name.replace(/\s+/g, " ").trim();
+      const key = normalizeName(playerName);
+      if (playerName && !odds.has(key)) odds.set(key, value);
+    }
+  }
+
   return odds;
 }
 
@@ -195,6 +251,28 @@ async function fetchText(url: string) {
   }
 
   return res.text();
+}
+
+async function fetchLeaderboardHtmlForEvent(eventId: string) {
+  const year = new Date().getFullYear();
+  const urls = [
+    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}/season/${year}`,
+    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}/season/${year - 1}`,
+    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}`,
+  ];
+
+  for (const url of urls) {
+    try {
+      const html = await fetchText(url);
+      if (html.includes("Tournament Field") || html.includes("Leaderboard")) {
+        return { html, url };
+      }
+    } catch {
+      // Try the next ESPN URL shape. Tournament pages are not consistent year to year.
+    }
+  }
+
+  return null;
 }
 
 async function findCbsOddsArticle(eventName: string) {
@@ -258,10 +336,24 @@ export async function GET(req: NextRequest) {
     const competitors = extractCompetitors(scoreboardJson, eventId);
     const eventName = event?.name ?? undefined;
 
+    if (!competitors.length && action === "field" && eventId) {
+      const page = await fetchLeaderboardHtmlForEvent(eventId);
+      const players = page ? extractPlayerFieldFromLeaderboardHtml(page.html) : [];
+
+      if (players.length) {
+        return NextResponse.json({
+          ok: true,
+          eventName,
+          players,
+          source: page?.url,
+        });
+      }
+    }
+
     if (!competitors.length) {
       return NextResponse.json({
         ok: false,
-        error: "Could not load ESPN competitors for that event.",
+        error: "Could not load ESPN competitors for that event. ESPN may not publish the full field through its live feed until the tournament starts.",
       });
     }
 
