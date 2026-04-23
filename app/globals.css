@@ -52,7 +52,7 @@ body {
 .rrg-brand {
   display: flex;
   align-items: center;
-  gap: 1.05rem;
+  gap: 1.15rem;
   color: #fdf7eb;
 }
 
@@ -62,112 +62,116 @@ body {
 
 .rrg-brand__badge {
   position: relative;
-  display: grid;
-  height: 4.35rem;
-  width: 4.35rem;
-  place-items: center;
+  height: 4.2rem;
+  width: 4.2rem;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.36);
-  border-radius: 1.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 1.25rem;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.14), transparent 36%),
-    radial-gradient(circle at 70% 25%, rgba(244, 199, 93, 0.42), transparent 1.45rem),
-    linear-gradient(145deg, #11382c 0%, #1f6a45 64%, #0d281f 100%);
-  box-shadow: inset 0 0 0 0.42rem rgba(255, 255, 255, 0.08), 0 16px 28px rgba(18, 56, 43, 0.24);
+    linear-gradient(160deg, rgba(255, 255, 255, 0.13), transparent 35%),
+    linear-gradient(145deg, #102f24 0%, #174834 58%, #0b221a 100%);
+  box-shadow: inset 0 0 0 0.08rem rgba(255, 255, 255, 0.08), 0 16px 28px rgba(18, 56, 43, 0.2);
 }
 
 .rrg-brand__badge::before {
   content: "";
   position: absolute;
-  inset: auto -0.7rem -1.05rem -0.7rem;
-  height: 2.15rem;
-  border-radius: 50%;
-  border-top: 1px solid rgba(255, 255, 255, 0.34);
-  background: rgba(255, 255, 255, 0.08);
+  inset: 0.58rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.95rem;
 }
 
 .rrg-brand__badge::after {
   content: "";
   position: absolute;
-  top: 0.72rem;
-  right: 0.74rem;
-  height: 0.5rem;
-  width: 0.5rem;
+  left: 0.95rem;
+  right: 0.95rem;
+  bottom: 1.02rem;
+  height: 0.1rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.rrg-brand__lane {
+  position: absolute;
+  left: 1.18rem;
+  top: 0.78rem;
+  height: 2.5rem;
+  width: 1.15rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem 1rem 1.6rem 1.6rem;
+  background: linear-gradient(180deg, rgba(167, 212, 104, 0.95), rgba(74, 144, 86, 0.88));
+  transform: rotate(34deg);
+  box-shadow: inset 0 0 0 0.08rem rgba(255, 255, 255, 0.15);
+}
+
+.rrg-brand__dot {
+  position: absolute;
+  top: 0.95rem;
+  right: 0.9rem;
+  height: 0.58rem;
+  width: 0.58rem;
   border-radius: 999px;
   background: var(--rrg-gold);
-  box-shadow: 0 0 0 0.28rem rgba(244, 199, 93, 0.18);
+  box-shadow: 0 0 0 0.2rem rgba(244, 199, 93, 0.16);
 }
 
-.rrg-brand__monogram {
-  position: relative;
-  z-index: 1;
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 1.34rem;
-  font-weight: 800;
-  letter-spacing: -0.08em;
-  color: #fff8e8;
-  transform: translateY(-0.06rem);
-}
-
-.rrg-brand__pin {
+.rrg-brand__bar {
   position: absolute;
-  bottom: 0.92rem;
-  left: 50%;
-  height: 1.85rem;
-  width: 0.13rem;
+  right: 1.02rem;
+  top: 1.16rem;
+  height: 1.7rem;
+  width: 0.14rem;
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 248, 232, 0.9), rgba(255, 248, 232, 0.2));
-  transform: translateX(-50%) rotate(28deg);
+  background: rgba(255, 248, 232, 0.86);
 }
 
 .rrg-brand__eyebrow {
   margin-bottom: 0.2rem;
   color: currentColor;
-  font-size: 0.68rem;
-  font-weight: 900;
-  letter-spacing: 0.26em;
-  opacity: 0.68;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  opacity: 0.6;
   text-transform: uppercase;
 }
 
 .rrg-brand__name {
-  display: flex;
-  gap: 0.34em;
-  align-items: baseline;
-  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
-  font-size: clamp(2.2rem, 4.7vw, 4.9rem);
-  font-weight: 900;
-  letter-spacing: -0.075em;
-  line-height: 0.88;
+  display: grid;
+  gap: 0.08rem;
+  line-height: 0.9;
+}
+
+.rrg-brand__primary {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: clamp(2rem, 4.3vw, 4.4rem);
+  font-weight: 700;
+  letter-spacing: -0.06em;
   text-transform: uppercase;
   text-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
 }
 
 .rrg-brand__accent {
-  position: relative;
   color: var(--rrg-gold);
-  letter-spacing: -0.065em;
-}
-
-.rrg-brand__accent::after {
-  content: "";
-  position: absolute;
-  left: 0.05em;
-  right: 0.02em;
-  bottom: -0.11em;
-  height: 0.09em;
-  border-radius: 999px;
-  background: currentColor;
+  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+  font-size: clamp(0.88rem, 1.55vw, 1.36rem);
+  font-weight: 800;
+  letter-spacing: 0.34em;
+  text-transform: uppercase;
 }
 
 .rrg-brand--compact .rrg-brand__badge {
-  height: 3.7rem;
-  width: 3.7rem;
-  border-radius: 1.25rem;
+  height: 3.35rem;
+  width: 3.35rem;
+  border-radius: 1rem;
 }
 
-.rrg-brand--compact .rrg-brand__name {
-  font-size: clamp(2.15rem, 8vw, 3.4rem);
+.rrg-brand--compact .rrg-brand__primary {
+  font-size: clamp(1.7rem, 7vw, 3rem);
+}
+
+.rrg-brand--compact .rrg-brand__accent {
+  font-size: clamp(0.78rem, 2.8vw, 1.08rem);
 }
 
 @media (max-width: 640px) {
@@ -176,13 +180,13 @@ body {
   }
 
   .rrg-brand__badge {
-    height: 3.4rem;
-    width: 3.4rem;
-    border-radius: 1.1rem;
+    height: 3rem;
+    width: 3rem;
+    border-radius: 0.95rem;
   }
 
   .rrg-brand__eyebrow {
-    font-size: 0.58rem;
-    letter-spacing: 0.16em;
+    font-size: 0.54rem;
+    letter-spacing: 0.14em;
   }
 }
