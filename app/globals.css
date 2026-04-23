@@ -152,11 +152,11 @@ body {
 
 .rrg-brand__flag {
   position: absolute;
-  left: 0.16em;
+  right: 0.16em;
   top: 0.08em;
   width: 0.56em;
   height: 0.34em;
-  clip-path: polygon(0 0, 100% 18%, 0 100%);
+  clip-path: polygon(100% 0, 0 18%, 100% 100%);
   background: var(--rrg-gold);
   filter: drop-shadow(0 0.08em 0.08em rgba(0, 0, 0, 0.22));
 }
