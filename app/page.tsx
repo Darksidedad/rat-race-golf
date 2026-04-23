@@ -440,6 +440,29 @@ export default function Page() {
       };
     });
   }, [assignedTeams, currentRound, currentTeamOnClock, draftComplete, picks, validDraftOrder]);
+  const draftPickTape = useMemo(() => {
+    if (!assignedTeams.length) return [];
+
+    return Array.from({ length: totalPicks }, (_, index) => {
+      const roundNumber = Math.floor(index / assignedTeams.length) + 1;
+      const roundIndex = index % assignedTeams.length;
+      const team = roundNumber % 2 === 1 ? assignedTeams[roundIndex] : assignedTeams[assignedTeams.length - 1 - roundIndex];
+      const pick = team ? picks.find((entry) => entry.team_id === team.id && entry.round_number === roundNumber) ?? null : null;
+      return {
+        pickNumber: index + 1,
+        roundNumber,
+        team,
+        pick,
+        state: index < picks.length ? "complete" : index === picks.length && !draftComplete ? "current" : "upcoming",
+      };
+    });
+  }, [assignedTeams, draftComplete, picks, totalPicks]);
+  const visiblePickTape = useMemo(() => {
+    if (!draftPickTape.length) return [];
+    const anchor = draftComplete ? draftPickTape.length - 1 : Math.min(picks.length, draftPickTape.length - 1);
+    const start = Math.max(0, Math.min(anchor - 3, draftPickTape.length - 7));
+    return draftPickTape.slice(start, start + 7);
+  }, [draftComplete, draftPickTape, picks.length]);
   const leaderboard = useMemo(() => {
     const positions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
@@ -1688,6 +1711,35 @@ export default function Page() {
                               <span className="rounded-full bg-white/70 px-3 py-1">Round {draftComplete ? ROUNDS : currentRound || 0}</span>
                               <span className="rounded-full bg-white/70 px-3 py-1">Pick {totalPicks ? `${Math.min(picks.length + 1, totalPicks)} / ${totalPicks}` : "0 / 0"}</span>
                               <span className="rounded-full bg-white/70 px-3 py-1">{currentRound % 2 === 0 ? "Snake moving right to left" : "Snake moving left to right"}</span>
+                            </div>
+                          </div>
+                          <div className="grid gap-2 rounded-3xl border border-black/10 bg-white/80 p-3">
+                            <div className="flex items-center justify-between gap-3 px-1">
+                              <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#617061]">Draft Flow</div>
+                              <div className="text-xs text-[#617061]">Current pick stays centered</div>
+                            </div>
+                            <div className="grid grid-cols-1 gap-2 md:grid-cols-7">
+                              {!visiblePickTape.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061] md:col-span-7">Set the draft order to see the pick flow.</div> : visiblePickTape.map((entry) => (
+                                <div key={entry.pickNumber} className={`grid min-h-[104px] content-start gap-1 rounded-2xl border p-3 text-sm ${
+                                  entry.state === "current"
+                                    ? "scale-[1.02] border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)]"
+                                    : entry.state === "complete"
+                                      ? "border-black/10 bg-[#f7f2e9] text-[#617061]"
+                                      : "border-black/10 bg-white text-[#1f2a1d]"
+                                }`}>
+                                  <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
+                                  <div className="font-semibold leading-tight">{entry.team?.name}</div>
+                                  {entry.pick ? (
+                                    <div className={`mt-1 rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
+                                      {entry.pick.player_name}
+                                    </div>
+                                  ) : (
+                                    <div className={`mt-1 text-xs ${entry.state === "current" ? "text-white/90" : "text-[#617061]"}`}>
+                                      {entry.state === "current" ? "Drafting now" : "Upcoming"}
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
                             </div>
                           </div>
                             <div className="grid gap-4 overflow-x-hidden pr-0">
