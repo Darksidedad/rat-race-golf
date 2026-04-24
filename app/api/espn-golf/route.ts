@@ -188,17 +188,20 @@ function displayGolfScore(raw: string | null | undefined) {
 }
 
 function teeTimeFromRound(round: NonNullable<EspnCompetitor["linescores"]>[number]) {
-  const raw = round.statistics?.categories?.[0]?.stats?.[6]?.displayValue;
+  const raw = round.statistics?.categories?.[0]?.stats?.[6]?.displayValue?.trim();
   if (!raw) return null;
 
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
+  const match = raw.match(/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/);
+  if (!match) return null;
 
-  return parsed.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "America/Chicago",
-  }) + " CT";
+  const hour = Number(match[1]);
+  const minute = match[2];
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
+
+  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
+  const meridiem = hour >= 12 ? "PM" : "AM";
+
+  return `${normalizedHour}:${minute} ${meridiem} CT`;
 }
 
 function competitorThru(competitor: EspnCompetitor) {

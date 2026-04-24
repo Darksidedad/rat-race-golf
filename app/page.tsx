@@ -907,9 +907,15 @@ export default function Page() {
       setBusy("");
       return;
     }
-    setCurrentSession((sessionResult.data as DraftSession | null) ?? null);
+    const nextSession = (sessionResult.data as DraftSession | null) ?? null;
+    setCurrentSession(nextSession);
     setTeams((teamsResult.data as DraftTeam[]) ?? []);
     setPicks((picksResult.data as DraftPick[]) ?? []);
+    if (nextSession?.status === "draft_complete" || nextSession?.status === "scored") {
+      setActiveRoomTab("results");
+    } else if (activeRoomTab === "results" && nextSession?.status === "setup") {
+      setActiveRoomTab("draft");
+    }
     setBusy("");
   }
 
