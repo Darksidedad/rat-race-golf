@@ -14,6 +14,11 @@ type EspnCompetitor = {
   linescores?: Array<{
     displayValue?: string | null;
     value?: number | null;
+    linescores?: Array<{
+      displayValue?: string | null;
+      value?: number | null;
+      period?: number | null;
+    }>;
   }>;
 };
 
@@ -174,12 +179,31 @@ function displayGolfScore(raw: string | null | undefined) {
   return text;
 }
 
+function competitorThru(competitor: EspnCompetitor) {
+  const rounds = Array.isArray(competitor.linescores) ? competitor.linescores : [];
+  const playedRounds = rounds.filter((round: any) => Array.isArray(round?.linescores) && round.linescores.length > 0);
+  const latestRound = playedRounds[playedRounds.length - 1];
+
+  if (!latestRound?.linescores?.length) return null;
+
+  const holesCompleted = latestRound.linescores.length;
+  if (!holesCompleted) return null;
+  if (holesCompleted >= 18) return "F";
+  return `Thru ${holesCompleted}`;
+}
+
+function encodeTotalWithThru(total: string | null, thru: string | null) {
+  if (!total && !thru) return null;
+  return `${total ?? ""}||${thru ?? ""}`;
+}
+
 function buildLeaderboard(competitors: EspnCompetitor[]) {
   const rankedPlayers = competitors
     .map((competitor) => ({
       name: competitorName(competitor),
       score: fetchableScore(competitor),
       total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
+      thru: competitorThru(competitor),
     }))
     .filter((entry) => entry.name.trim())
     .sort((a, b) => {
@@ -193,14 +217,14 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
   let lastScore: number | null = null;
-  let lastPosition = 0;
-
-  rankedPlayers.forEach((entry, index) => {
-    totals[normalizeName(entry.name)] = entry.total;
-    if (entry.score === null) {
-      leaderboard[normalizeName(entry.name)] = null;
-      return;
-    }
+    let lastPosition = 0;
+  
+    rankedPlayers.forEach((entry, index) => {
+      totals[normalizeName(entry.name)] = encodeTotalWithThru(entry.total, entry.thru);
+      if (entry.score === null) {
+        leaderboard[normalizeName(entry.name)] = null;
+        return;
+      }
 
     if (lastScore === null || entry.score !== lastScore) {
       lastPosition = index + 1;

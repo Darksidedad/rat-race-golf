@@ -137,6 +137,18 @@ function totalColorClass(total: string | null | undefined) {
   return "text-[#1f2a1d]";
 }
 
+function parseStoredTotal(total: string | null | undefined) {
+  if (!total) return null;
+  const [score] = total.split("||");
+  return score || null;
+}
+
+function parseStoredThru(total: string | null | undefined) {
+  if (!total || !total.includes("||")) return null;
+  const [, thru] = total.split("||");
+  return thru || null;
+}
+
 function formatProfileLabel(username: string, teamName: string | null | undefined) {
   const trimmedTeam = teamName?.trim();
   if (!trimmedTeam) return username;
@@ -486,12 +498,14 @@ export default function Page() {
   const leaderboard = useMemo(() => {
     const positions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
-      return assignedTeams.map((team) => {
-        const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
-        const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
-        const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          return { ...pick, position, total, points: pointsForPosition(position) };
-        });
+        return assignedTeams.map((team) => {
+          const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
+          const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+          const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+          const displayTotal = parseStoredTotal(total);
+          const thru = parseStoredThru(total);
+            return { ...pick, position, total: displayTotal, thru, points: pointsForPosition(position) };
+          });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
       const countingKeys = new Set(
         [...playerScores]
@@ -1875,7 +1889,11 @@ export default function Page() {
                                       <div className="truncate font-medium leading-tight">{player.player_name}</div>
                                       {player.total ? <span className={`shrink-0 text-sm font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
                                     </div>
-                                    <div className="text-[11px] text-[#617061]">{player.position ? `P${player.position}` : "CUT / no finish"}</div>
+                                    <div className="text-[11px] text-[#617061]">
+                                      {player.position
+                                        ? `${`P${player.position}`}${player.thru ? ` · ${player.thru}` : ""}`
+                                        : player.thru || "CUT / no finish"}
+                                    </div>
                                   </div>
                                   <div className="text-right">
                                     <div className="font-semibold">{player.points}</div>
