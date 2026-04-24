@@ -149,6 +149,15 @@ function parseStoredThru(total: string | null | undefined) {
   return thru || null;
 }
 
+function holesCompletedFromThru(thru: string | null | undefined) {
+  const value = String(thru ?? "").trim().toUpperCase();
+  if (!value) return 0;
+  if (value === "F") return 18;
+  const match = value.match(/^THRU\s+(\d{1,2})$/);
+  if (!match) return 0;
+  return Math.max(0, Math.min(18, Number(match[1])));
+}
+
 function formatProfileLabel(username: string, teamName: string | null | undefined) {
   const trimmedTeam = teamName?.trim();
   if (!trimmedTeam) return username;
@@ -1898,6 +1907,18 @@ export default function Page() {
                                   <div className="text-right">
                                     <div className="font-semibold">{player.points}</div>
                                     <div className="text-[10px] uppercase tracking-[0.15em] text-[#617061]">{entry.countingKeys.has(player.id) ? "Counts" : "Bench"}</div>
+                                  </div>
+                                  <div className="col-span-2 mt-1 grid grid-cols-9 gap-1">
+                                    {Array.from({ length: 18 }, (_, holeIndex) => {
+                                      const filled = holeIndex < holesCompletedFromThru(player.thru);
+                                      return (
+                                        <span
+                                          key={`${player.id}-hole-${holeIndex + 1}`}
+                                          className={`h-1.5 rounded-full ${filled ? "bg-[#1a5c3a]" : "bg-black/10"}`}
+                                          title={`Hole ${holeIndex + 1}`}
+                                        />
+                                      );
+                                    })}
                                   </div>
                                 </div>
                               ))}
