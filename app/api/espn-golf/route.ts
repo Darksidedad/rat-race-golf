@@ -198,8 +198,12 @@ function teeTimeFromRound(round: NonNullable<EspnCompetitor["linescores"]>[numbe
   const minute = match[2];
   if (!Number.isFinite(hour) || hour < 0 || hour > 23) return null;
 
-  const normalizedHour = hour % 12 === 0 ? 12 : hour % 12;
-  const meridiem = hour >= 12 ? "PM" : "AM";
+  // ESPN's golf feed has been returning Zurich tee-time strings with the correct
+  // Eastern clock time but an incorrect timezone suffix, so we normalize by
+  // treating the raw clock as ET and converting one hour back to CT.
+  const centralHour = (hour + 23) % 24;
+  const normalizedHour = centralHour % 12 === 0 ? 12 : centralHour % 12;
+  const meridiem = centralHour >= 12 ? "PM" : "AM";
 
   return `${normalizedHour}:${minute} ${meridiem} CT`;
 }
