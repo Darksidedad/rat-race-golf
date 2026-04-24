@@ -19,6 +19,14 @@ type EspnCompetitor = {
       value?: number | null;
       period?: number | null;
     }>;
+    statistics?: {
+      categories?: Array<{
+        stats?: Array<{
+          displayValue?: string | null;
+          value?: number | null;
+        }>;
+      }>;
+    };
   }>;
 };
 
@@ -179,17 +187,35 @@ function displayGolfScore(raw: string | null | undefined) {
   return text;
 }
 
+function teeTimeFromRound(round: NonNullable<EspnCompetitor["linescores"]>[number]) {
+  const raw = round.statistics?.categories?.[0]?.stats?.[6]?.displayValue;
+  if (!raw) return null;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  return parsed.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: "America/Chicago",
+  });
+}
+
 function competitorThru(competitor: EspnCompetitor) {
   const rounds = Array.isArray(competitor.linescores) ? competitor.linescores : [];
-  const playedRounds = rounds.filter((round: any) => Array.isArray(round?.linescores) && round.linescores.length > 0);
-  const latestRound = playedRounds[playedRounds.length - 1];
+  const activeRound = rounds.find((round) => Array.isArray(round?.linescores) && round.linescores.length > 0 && round.linescores.length < 18);
+  if (activeRound?.linescores?.length) {
+    return `Thru ${activeRound.linescores.length}`;
+  }
 
-  if (!latestRound?.linescores?.length) return null;
+  const upcomingRound = rounds.find((round) => !round?.linescores?.length && round?.displayValue === "-");
+  const teeTime = upcomingRound ? teeTimeFromRound(upcomingRound) : null;
+  if (teeTime) return teeTime;
 
-  const holesCompleted = latestRound.linescores.length;
-  if (!holesCompleted) return null;
-  if (holesCompleted >= 18) return "F";
-  return `Thru ${holesCompleted}`;
+  const completedRound = [...rounds].reverse().find((round) => Array.isArray(round?.linescores) && round.linescores.length >= 18);
+  if (completedRound?.linescores?.length) return "F";
+
+  return null;
 }
 
 function encodeTotalWithThru(total: string | null, thru: string | null) {
