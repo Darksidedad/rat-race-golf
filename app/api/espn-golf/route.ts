@@ -198,7 +198,7 @@ function teeTimeFromRound(round: NonNullable<EspnCompetitor["linescores"]>[numbe
     hour: "numeric",
     minute: "2-digit",
     timeZone: "America/Chicago",
-  });
+  }) + " CT";
 }
 
 function competitorThru(competitor: EspnCompetitor) {
