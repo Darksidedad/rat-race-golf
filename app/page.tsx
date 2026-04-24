@@ -776,12 +776,43 @@ export default function Page() {
 
     const ownerId = ownerUserId || null;
     const selectedProfile = profiles.find((entry) => entry.id === ownerId) ?? null;
-    const nextTeamName = selectedProfile?.team_name?.trim() || team.name;
+    const nextTeamName = team.name;
+
+    if (team.owner_user_id && team.owner_user_id !== ownerId) {
+      const previousProfile = profiles.find((entry) => entry.id === team.owner_user_id) ?? null;
+      if (previousProfile?.team_name && normalizeName(previousProfile.team_name) === normalizeName(team.name)) {
+        const { error: previousProfileError } = await supabase
+          .from("profiles")
+          .update({ team_name: null })
+          .eq("id", team.owner_user_id);
+
+        if (previousProfileError) {
+          console.error(previousProfileError);
+          setStatusMessage("The team owner changed, but the previous member profile could not be cleared.");
+          return;
+        }
+      }
+    }
+
+    if (ownerId) {
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({ team_name: nextTeamName })
+        .eq("id", ownerId);
+
+      if (profileError) {
+        console.error(profileError);
+        setStatusMessage("Could not sync that member profile to the assigned team.");
+        return;
+      }
+    }
+
     await updateTeam(
       team.id,
       { owner_user_id: ownerId, name: nextTeamName },
       ownerId ? `Assigned ${team.name} to ${selectedProfile?.username ?? "that member"}.` : `Removed the owner for ${team.name}.`
     );
+    await loadProfiles();
     if (currentSession) await loadSession(currentSession.id, false);
   }
 
