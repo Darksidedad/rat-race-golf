@@ -181,7 +181,14 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
       score: fetchableScore(competitor),
       total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
     }))
-    .filter((entry) => entry.name.trim());
+    .filter((entry) => entry.name.trim())
+    .sort((a, b) => {
+      if (a.score === null && b.score === null) return a.name.localeCompare(b.name);
+      if (a.score === null) return 1;
+      if (b.score === null) return -1;
+      if (a.score !== b.score) return a.score - b.score;
+      return a.name.localeCompare(b.name);
+    });
 
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
