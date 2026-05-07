@@ -25,7 +25,7 @@ type DraftPick = { id: string; session_id: string; team_id: string; player_name:
 type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "member"; created_at: string };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; source?: string; error?: string };
-type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; error?: string };
+type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
 type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
@@ -1199,10 +1199,10 @@ export default function Page() {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
         totals: payload.totals ?? {},
-        next_status: "scored",
+        next_status: payload.finalized ? "finalized" : "scored",
       });
       if (error) throw error;
-      setStatusMessage(`Updated leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.`);
+      setStatusMessage(payload.finalized ? `Saved final leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.` : `Updated leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.`);
       await loadSessions();
       await loadSession(currentSession.id, false);
     } catch (error) {

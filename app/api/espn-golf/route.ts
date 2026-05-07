@@ -230,6 +230,20 @@ function encodeTotalWithThru(total: string | null, thru: string | null) {
   return `${total ?? ""}||${thru ?? ""}`;
 }
 
+function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions: Record<string, number | null>) {
+  const eventCompleted = Boolean(event?.status?.type?.completed ?? event?.competitions?.[0]?.status?.type?.completed);
+  if (!eventCompleted) return false;
+
+  const allCompetitorsClosed = competitors.every((competitor) => {
+    const thru = competitorThru(competitor);
+    return thru === "F" || thru === null;
+  });
+  if (!allCompetitorsClosed) return false;
+
+  const firstPlaceCount = Object.values(positions).filter((position) => position === 1).length;
+  return firstPlaceCount === 1;
+}
+
 function buildLeaderboard(competitors: EspnCompetitor[]) {
   const rankedPlayers = competitors
     .map((competitor) => ({
