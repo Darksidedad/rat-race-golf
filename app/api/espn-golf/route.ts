@@ -126,7 +126,7 @@ function extractEventById(scoreboardJson: any, eventId: string | null) {
   const events = Array.isArray(scoreboardJson?.events) ? scoreboardJson.events : [];
   if (!events.length) return null;
   if (!eventId) return events[0] ?? null;
-  return events.find((event: any) => String(event?.id) === String(eventId)) ?? events[0] ?? null;
+  return events.find((event: any) => String(event?.id) === String(eventId)) ?? null;
 }
 
 function extractCompetitors(scoreboardJson: any, eventId: string | null) {
@@ -481,3 +481,4 @@ export async function GET(req: NextRequest) {
     });
   }
 }
+

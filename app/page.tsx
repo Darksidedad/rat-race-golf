@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import type { KeyboardEvent } from "react";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
@@ -533,6 +533,7 @@ export default function Page() {
   const currentUsersTeams = useMemo(() => teams.filter((team) => team.owner_user_id === user?.id), [teams, user?.id]);
   const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isCommissioner || currentTeamOnClock.owner_user_id === user.id);
   const canManageLeague = !!user && isCommissioner;
+  const resultsFinalized = currentSession?.status === "finalized";
   const ownedTeamNames = currentUsersTeams.map((team) => team.name);
   const showTeamPill = !!profile?.team_name && normalizeName(profile.team_name) !== normalizeName(profile.username);
 
@@ -911,7 +912,7 @@ export default function Page() {
     setCurrentSession(nextSession);
     setTeams((teamsResult.data as DraftTeam[]) ?? []);
     setPicks((picksResult.data as DraftPick[]) ?? []);
-    if (nextSession?.status === "draft_complete" || nextSession?.status === "scored") {
+    if (nextSession?.status === "draft_complete" || nextSession?.status === "scored" || nextSession?.status === "finalized") {
       setActiveRoomTab("results");
     } else if (activeRoomTab === "results" && nextSession?.status === "setup") {
       setActiveRoomTab("draft");
@@ -1188,6 +1189,7 @@ export default function Page() {
 
   async function pullLeaderboard() {
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
+    if (currentSession.status === "finalized") return setStatusMessage("This tournament is finalized. Reopen results before refreshing the leaderboard.");
     setBusy("Pulling leaderboard...");
     try {
       const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}`);
@@ -1267,6 +1269,7 @@ export default function Page() {
   async function applyManualScores() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can apply manual scores.");
     if (!currentSession) return;
+    if (currentSession.status === "finalized") return setStatusMessage("This tournament is finalized. Reopen results before applying score changes.");
     setBusy("Applying manual scores...");
     const parsed = parseManualLeaderboard(manualLeaderboardDraft);
     if (!Object.keys(parsed).length) {
@@ -1276,6 +1279,19 @@ export default function Page() {
     }
     await updateSession({ manual_leaderboard_input: manualLeaderboardDraft, current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
     setBusy("");
+  }
+
+  async function finalizeResults() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can finalize tournament results.");
+    if (!currentSession) return;
+    if (!Object.keys(currentSession.current_positions ?? {}).length) return setStatusMessage("Refresh the leaderboard or apply scores before finalizing this tournament.");
+    await updateSession({ status: "finalized" }, `Finalized ${currentSession.event_name ?? currentSession.name}. Saved results are now locked.`);
+  }
+
+  async function reopenFinalizedResults() {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can reopen finalized results.");
+    if (!currentSession) return;
+    await updateSession({ status: "scored" }, `Reopened ${currentSession.event_name ?? currentSession.name}. You can refresh or edit leaderboard results again.`);
   }
 
   async function replacePick(playerName: string) {
@@ -1875,11 +1891,28 @@ export default function Page() {
                                 </div>
                               </div>
                                   <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
-                                    <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
-                                  {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                    </button>
+                                    {canManageLeague ? (
+                                      resultsFinalized ? (
+                                        <button className="rounded-full border border-[#f6d77a]/60 bg-white/90 px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={reopenFinalizedResults}>
+                                          Reopen Results
+                                        </button>
+                                      ) : (
+                                        <>
+                                          <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                            {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                                          </button>
+                                          <button className="rounded-full border border-white/30 bg-[#173c31] px-4 py-2 text-sm font-semibold text-white" onClick={finalizeResults}>
+                                            Finalize Results
+                                          </button>
+                                        </>
+                                      )
+                                    ) : (
+                                      <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
+                                        {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                                      </button>
+                                    )}
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
-                                  Last updated: {resultsUpdatedLabel}
+                                  Last updated: {resultsUpdatedLabel}{resultsFinalized ? " · Finalized" : ""}
                                 </div>
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
