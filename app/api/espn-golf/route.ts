@@ -225,9 +225,9 @@ function competitorThru(competitor: EspnCompetitor) {
   return null;
 }
 
-function encodeTotalWithThru(total: string | null, thru: string | null) {
-  if (!total && !thru) return null;
-  return `${total ?? ""}||${thru ?? ""}`;
+function encodeTotalWithThru(total: string | null, thru: string | null, meta: string | null = null) {
+  if (!total && !thru && !meta) return null;
+  return `${total ?? ""}||${thru ?? ""}||${meta ?? ""}`;
 }
 
 function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions: Record<string, number | null>) {
@@ -246,11 +246,12 @@ function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions
 
 function buildLeaderboard(competitors: EspnCompetitor[]) {
   const rankedPlayers = competitors
-    .map((competitor) => ({
+    .map((competitor, sourceIndex) => ({
       name: competitorName(competitor),
       score: fetchableScore(competitor),
       total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
       thru: competitorThru(competitor),
+      sourceIndex,
     }))
     .filter((entry) => entry.name.trim())
     .sort((a, b) => {
@@ -258,20 +259,28 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
       if (a.score === null) return 1;
       if (b.score === null) return -1;
       if (a.score !== b.score) return a.score - b.score;
-      return a.name.localeCompare(b.name);
+      return a.sourceIndex - b.sourceIndex;
     });
 
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
+  const playoffPlayers = rankedPlayers.filter((entry) => entry.score !== null && entry.score === rankedPlayers[0]?.score && entry.thru && entry.thru !== "F");
   let lastScore: number | null = null;
     let lastPosition = 0;
   
     rankedPlayers.forEach((entry, index) => {
-      totals[normalizeName(entry.name)] = encodeTotalWithThru(entry.total, entry.thru);
+      const playoffIndex = playoffPlayers.findIndex((player) => normalizeName(player.name) === normalizeName(entry.name));
+      const playoffMeta = playoffIndex >= 0 ? `PLAYOFF:${playoffIndex + 1}:${playoffPlayers.length}` : null;
+      totals[normalizeName(entry.name)] = encodeTotalWithThru(entry.total, entry.thru, playoffMeta);
       if (entry.score === null) {
         leaderboard[normalizeName(entry.name)] = null;
         return;
       }
+
+    if (playoffIndex > 0) {
+      leaderboard[normalizeName(entry.name)] = playoffIndex + 1;
+      return;
+    }
 
     if (lastScore === null || entry.score !== lastScore) {
       lastPosition = index + 1;

@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase";
 type EventOption = { id: string; name: string };
 type DraftSession = {
   id: string;
+  league_id: string | null;
   name: string;
   event_id: string | null;
   event_name: string | null;
@@ -21,8 +22,10 @@ type DraftSession = {
   updated_at: string;
 };
 type DraftTeam = { id: string; session_id: string; name: string; draft_slot: number | null; active: boolean; owner_user_id: string | null; created_at: string };
+type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "assistant_commissioner" | "member"; site_role: "site_admin" | "user"; active_league_id: string | null; created_at: string };
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
-type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "member"; created_at: string };
+type League = { id: string; name: string; slug: string; created_by: string | null; created_at: string };
+type LeagueMembership = { id: string; league_id: string; user_id: string; role: Profile["role"]; claimed_team_name: string | null; created_at: string };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; source?: string; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
@@ -64,7 +67,7 @@ const INVALID_PLAYER_TERMS = [
 ];
 
 function normalizeName(name: string) {
-  return name.toLowerCase().replace(/\./g, "").replace(/['’]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+  return name.toLowerCase().replace(/\./g, "").replace(/['\u2019]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
 }
 
 function formatOdds(odds: number | null | undefined) {
@@ -149,6 +152,18 @@ function parseStoredThru(total: string | null | undefined) {
   return thru || null;
 }
 
+function parseStoredMeta(total: string | null | undefined) {
+  if (!total || !total.includes("||")) return null;
+  const [, , meta] = total.split("||");
+  return meta || null;
+}
+
+function playoffLabel(meta: string | null | undefined) {
+  if (!meta?.startsWith("PLAYOFF:")) return null;
+  const [, rank, total] = meta.split(":");
+  return `Playoff ${rank || "?"} of ${total || "?"}`;
+}
+
 function holesCompletedFromThru(thru: string | null | undefined) {
   const value = String(thru ?? "").trim().toUpperCase();
   if (!value) return 0;
@@ -156,6 +171,17 @@ function holesCompletedFromThru(thru: string | null | undefined) {
   const match = value.match(/^THRU\s+(\d{1,2})$/);
   if (!match) return 0;
   return Math.max(0, Math.min(18, Number(match[1])));
+}
+
+function holesCompletedForDisplay(thru: string | null | undefined, meta: string | null | undefined) {
+  if (playoffLabel(meta)) return 0;
+  return holesCompletedFromThru(thru);
+}
+
+function resultStatusLabel(position: number | null, thru: string | null | undefined, meta: string | null | undefined) {
+  const playoff = playoffLabel(meta);
+  if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : thru ? ` - ${thru}` : ""}`;
+  return playoff ?? thru ?? "CUT / no finish";
 }
 
 function formatProfileLabel(username: string, teamName: string | null | undefined) {
@@ -190,6 +216,16 @@ function getCurrentTeamOnClock(teams: DraftTeam[], picks: DraftPick[]) {
 
 function statusLabel(status: string) {
   return status.replace(/[_-]/g, " ");
+}
+
+function roleLabel(role: Profile["role"]) {
+  if (role === "commissioner") return "Commissioner";
+  if (role === "assistant_commissioner") return "Assistant Commissioner";
+  return "Member";
+}
+
+function slugifyLeagueName(name: string) {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
 }
 
 function isValidPlayerName(player: string) {
@@ -311,6 +347,10 @@ export default function Page() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [siteProfiles, setSiteProfiles] = useState<Profile[]>([]);
+  const [leagues, setLeagues] = useState<League[]>([]);
+  const [memberships, setMemberships] = useState<LeagueMembership[]>([]);
+  const [currentLeagueId, setCurrentLeagueId] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [currentSession, setCurrentSession] = useState<DraftSession | null>(null);
@@ -319,6 +359,9 @@ export default function Page() {
   const [events, setEvents] = useState<EventOption[]>([]);
   const [newSessionName, setNewSessionName] = useState("");
   const [newSessionEventId, setNewSessionEventId] = useState("");
+  const [newLeagueName, setNewLeagueName] = useState("");
+  const [newLeagueSlug, setNewLeagueSlug] = useState("");
+  const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
   const [playerPoolDraft, setPlayerPoolDraft] = useState("");
   const [manualLeaderboardDraft, setManualLeaderboardDraft] = useState("");
   const [playerFilter, setPlayerFilter] = useState("");
@@ -343,6 +386,13 @@ export default function Page() {
   const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
   const [oddsSource, setOddsSource] = useState("");
   const deferredFilter = useDeferredValue(playerFilter);
+  const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
+  const currentMembership = useMemo(() => memberships.find((membership) => membership.league_id === currentLeagueId && membership.user_id === user?.id) ?? null, [currentLeagueId, memberships, user?.id]);
+  const effectiveRole = currentMembership?.role ?? profile?.role ?? "member";
+  const isSiteAdmin = profile?.site_role === "site_admin";
+  const isCommissioner = effectiveRole === "commissioner";
+  const isAssistantCommissioner = effectiveRole === "assistant_commissioner";
+  const isLeagueAdmin = isSiteAdmin || isCommissioner || isAssistantCommissioner;
 
   useEffect(() => {
     loadEvents();
@@ -368,6 +418,9 @@ export default function Page() {
     if (!user) {
       setProfile(null);
       setProfiles([]);
+      setLeagues([]);
+      setMemberships([]);
+      setCurrentLeagueId("");
       setSessions([]);
       setCurrentSession(null);
       setTeams([]);
@@ -377,10 +430,24 @@ export default function Page() {
       return;
     }
 
-    loadProfile(user.id);
-    loadSessions();
+    void loadProfile(user.id);
   }, [authChecked, user]);
 
+
+  useEffect(() => {
+    setSelectedSessionId("");
+    setCurrentSession(null);
+    setTeams([]);
+    setPicks([]);
+  }, [currentLeagueId]);
+
+  useEffect(() => {
+    if (!authChecked || !user || !currentLeagueId) {
+      if (authChecked && user && !currentLeagueId) setSessions([]);
+      return;
+    }
+    void loadSessions();
+  }, [authChecked, user, currentLeagueId]);
   useEffect(() => {
     if (!selectedSessionId && sessions[0]?.id) setSelectedSessionId(sessions[0].id);
   }, [sessions, selectedSessionId]);
@@ -413,19 +480,19 @@ export default function Page() {
   }, [currentSession?.event_name]);
 
   useEffect(() => {
-    if (!profile || profile.role === "commissioner") return;
+    if (!profile || isLeagueAdmin) return;
     if (activeRoomTab === "setup" || activeRoomTab === "admin") {
       setActiveRoomTab("draft");
     }
-  }, [activeRoomTab, profile]);
+  }, [activeRoomTab, isLeagueAdmin, profile]);
 
   useEffect(() => {
-    if (profile?.role !== "commissioner") {
+    if (!isLeagueAdmin || !currentLeagueId) {
       setProfiles([]);
       return;
     }
     loadProfiles();
-  }, [profile?.role]);
+  }, [currentLeagueId, isLeagueAdmin]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -436,8 +503,8 @@ export default function Page() {
 
   useEffect(() => {
     setProfileDraftName(profile?.username ?? "");
-    setProfileDraftTeam(profile?.team_name ?? "");
-  }, [profile?.username, profile?.team_name]);
+    setProfileDraftTeam(currentMembership?.claimed_team_name ?? profile?.team_name ?? "");
+  }, [currentMembership?.claimed_team_name, profile?.username, profile?.team_name]);
 
   useEffect(() => {
     if (activeRoomTab !== "season" || !sessions.length) return;
@@ -513,7 +580,8 @@ export default function Page() {
           const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
           const displayTotal = parseStoredTotal(total);
           const thru = parseStoredThru(total);
-            return { ...pick, position, total: displayTotal, thru, points: pointsForPosition(position) };
+          const meta = parseStoredMeta(total);
+            return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position) };
           });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
       const countingKeys = new Set(
@@ -529,13 +597,18 @@ export default function Page() {
     if (!currentSession?.updated_at) return "Not updated yet";
     return new Date(currentSession.updated_at).toLocaleString();
   }, [currentSession?.updated_at]);
-  const isCommissioner = profile?.role === "commissioner";
   const currentUsersTeams = useMemo(() => teams.filter((team) => team.owner_user_id === user?.id), [teams, user?.id]);
-  const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isCommissioner || currentTeamOnClock.owner_user_id === user.id);
-  const canManageLeague = !!user && isCommissioner;
+  const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isLeagueAdmin || currentTeamOnClock.owner_user_id === user.id);
+  const canManageLeague = !!user && isLeagueAdmin;
+  const canManagePermissions = !!user && (isSiteAdmin || isCommissioner);
   const resultsFinalized = currentSession?.status === "finalized";
   const ownedTeamNames = currentUsersTeams.map((team) => team.name);
-  const showTeamPill = !!profile?.team_name && normalizeName(profile.team_name) !== normalizeName(profile.username);
+  const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
+  const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
+  const availableSiteProfiles = useMemo(() => {
+    const memberIds = new Set(profiles.map((entry) => entry.id));
+    return siteProfiles.filter((entry) => !memberIds.has(entry.id));
+  }, [profiles, siteProfiles]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -546,15 +619,27 @@ export default function Page() {
   }, [availablePlayers]);
 
   async function initializeAuth() {
-    const { data, error } = await supabase.auth.getSession();
-    if (error) {
+    let sessionResult: Awaited<ReturnType<typeof supabase.auth.getSession>>;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("Supabase auth timed out.")), 10000);
+      });
+      sessionResult = await Promise.race([supabase.auth.getSession(), timeout]);
+    } catch (error) {
       console.error(error);
       setAuthChecked(true);
       setStatusMessage("Could not load your sign-in session.");
       return;
     }
 
-    setUser(data.session?.user ?? null);
+    if (sessionResult.error) {
+      console.error(sessionResult.error);
+      setAuthChecked(true);
+      setStatusMessage("Could not load your sign-in session.");
+      return;
+    }
+
+    setUser(sessionResult.data.session?.user ?? null);
     setAuthChecked(true);
   }
 
@@ -566,18 +651,110 @@ export default function Page() {
       return;
     }
 
-    setProfile((data as Profile | null) ?? null);
+    const nextProfile = (data as Profile | null) ?? null;
+    setProfile(nextProfile);
+
+    const defaultLeagueResult = await supabase.rpc("ensure_default_league_membership", {
+      claimed_team_name: nextProfile?.team_name ?? null,
+    });
+    if (defaultLeagueResult.error) {
+      console.error(defaultLeagueResult.error);
+      setStatusMessage("Could not verify your league membership.");
+    }
+
+    await loadLeagueContext(userId, nextProfile);
+  }
+
+  async function loadLeagueContext(userId: string, nextProfile: Profile | null) {
+    const membershipResult = await supabase.from("league_memberships").select("*").eq("user_id", userId).order("created_at", { ascending: true });
+    if (membershipResult.error) {
+      console.error(membershipResult.error);
+      setStatusMessage("Could not load your league memberships.");
+      return;
+    }
+
+    const nextMemberships = (membershipResult.data ?? []) as LeagueMembership[];
+    setMemberships(nextMemberships);
+
+    const leagueIds = new Set(nextMemberships.map((membership) => membership.league_id));
+    if (nextProfile?.active_league_id) leagueIds.add(nextProfile.active_league_id);
+
+    const leagueQuery = nextProfile?.site_role === "site_admin"
+      ? supabase.from("leagues").select("*").order("created_at", { ascending: true })
+      : leagueIds.size
+        ? supabase.from("leagues").select("*").in("id", Array.from(leagueIds)).order("created_at", { ascending: true })
+        : supabase.from("leagues").select("*").limit(0);
+
+    const leagueResult = await leagueQuery;
+    if (leagueResult.error) {
+      console.error(leagueResult.error);
+      setStatusMessage("Could not load your leagues.");
+      return;
+    }
+
+    const nextLeagues = (leagueResult.data ?? []) as League[];
+    setLeagues(nextLeagues);
+    setCurrentLeagueId((current) => {
+      if (current && nextLeagues.some((league) => league.id === current)) return current;
+      if (nextProfile?.active_league_id && nextLeagues.some((league) => league.id === nextProfile.active_league_id)) return nextProfile.active_league_id;
+      return nextMemberships[0]?.league_id ?? nextLeagues[0]?.id ?? "";
+    });
   }
 
   async function loadProfiles() {
-    const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: true });
+    if (!currentLeagueId) {
+      setProfiles([]);
+      return;
+    }
+
+    if (isSiteAdmin) {
+      void loadSiteProfiles();
+    }
+
+    const membershipResult = await supabase.from("league_memberships").select("*").eq("league_id", currentLeagueId).order("created_at", { ascending: true });
+    if (membershipResult.error) {
+      console.error(membershipResult.error);
+      setStatusMessage("Could not load league memberships.");
+      return;
+    }
+
+    const leagueMemberships = (membershipResult.data ?? []) as LeagueMembership[];
+    const memberIds = leagueMemberships.map((membership) => membership.user_id);
+    if (!memberIds.length) {
+      setProfiles([]);
+      return;
+    }
+
+    const { data, error } = await supabase.from("profiles").select("*").in("id", memberIds).order("created_at", { ascending: true });
     if (error) {
       console.error(error);
       setStatusMessage("Could not load signed-up league members.");
       return;
     }
 
-    setProfiles((data ?? []) as Profile[]);
+    const roleByUserId = new Map(leagueMemberships.map((membership) => [membership.user_id, membership.role]));
+    const claimedTeamByUserId = new Map(leagueMemberships.map((membership) => [membership.user_id, membership.claimed_team_name]));
+    setProfiles(((data ?? []) as Profile[]).map((entry) => ({
+      ...entry,
+      role: roleByUserId.get(entry.id) ?? entry.role,
+      team_name: claimedTeamByUserId.get(entry.id) ?? entry.team_name,
+    })));
+  }
+
+  async function loadSiteProfiles() {
+    if (!isSiteAdmin) {
+      setSiteProfiles([]);
+      return;
+    }
+
+    const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: true });
+    if (error) {
+      console.error(error);
+      setStatusMessage("Could not load all site accounts.");
+      return;
+    }
+
+    setSiteProfiles((data ?? []) as Profile[]);
   }
 
   async function signIn() {
@@ -681,6 +858,120 @@ export default function Page() {
     setStatusMessage("Password updated. You can use your new password now.");
   }
 
+  async function changeActiveLeague(nextLeagueId: string) {
+    if (!user || !nextLeagueId || nextLeagueId === currentLeagueId) return;
+    setCurrentLeagueId(nextLeagueId);
+    setBusy("Switching league...");
+    const { error } = await supabase.from("profiles").update({ active_league_id: nextLeagueId }).eq("id", user.id);
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage("Switched league locally, but could not save it as your default.");
+      return;
+    }
+
+    setStatusMessage(`Switched to ${leagues.find((league) => league.id === nextLeagueId)?.name ?? "that league"}.`);
+    await loadProfile(user.id);
+  }
+
+  async function createLeague() {
+    if (!user || !isSiteAdmin) {
+      setStatusMessage("Only a site admin can create leagues.");
+      return;
+    }
+
+    const leagueName = newLeagueName.trim();
+    const leagueSlug = (newLeagueSlug.trim() || slugifyLeagueName(leagueName));
+    if (!leagueName || !leagueSlug) {
+      setStatusMessage("Enter a league name before creating it.");
+      return;
+    }
+
+    setBusy("Creating league...");
+    const leagueResult = await supabase.rpc("create_league_for_site_admin", {
+      target_name: leagueName,
+      target_slug: leagueSlug,
+      commissioner_claimed_team_name: activeTeamName,
+    });
+
+    if (leagueResult.error || !leagueResult.data) {
+      console.error(leagueResult.error);
+      setBusy("");
+      setStatusMessage(leagueResult.error?.message || "Could not create that league.");
+      return;
+    }
+
+    setNewLeagueName("");
+    setNewLeagueSlug("");
+    setBusy("");
+    setStatusMessage(`Created ${leagueName}.`);
+    setCurrentLeagueId(leagueResult.data as string);
+    await loadProfile(user.id);
+  }
+
+  async function addExistingMemberToLeague() {
+    if (!user || !isSiteAdmin || !currentLeagueId) {
+      setStatusMessage("Only a site admin can add accounts to leagues.");
+      return;
+    }
+
+    const selectedProfile = siteProfiles.find((entry) => entry.id === newLeagueMemberId) ?? null;
+    if (!selectedProfile) {
+      setStatusMessage("Choose an account to add to this league.");
+      return;
+    }
+
+    setBusy("Adding league member...");
+    const { error } = await supabase.from("league_memberships").insert([{
+      league_id: currentLeagueId,
+      user_id: selectedProfile.id,
+      claimed_team_name: selectedProfile.team_name,
+    }]);
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not add that account to this league.");
+      return;
+    }
+
+    setNewLeagueMemberId("");
+    setStatusMessage(`Added ${selectedProfile.username} to ${currentLeague?.name ?? "this league"}.`);
+    await loadProfiles();
+  }
+
+  async function addAllExistingMembersToLeague() {
+    if (!user || !isSiteAdmin || !currentLeagueId) {
+      setStatusMessage("Only a site admin can add accounts to leagues.");
+      return;
+    }
+
+    if (!availableSiteProfiles.length) {
+      setStatusMessage("Every account is already in this league.");
+      return;
+    }
+
+    setBusy("Adding all league members...");
+    const { error } = await supabase.from("league_memberships").insert(
+      availableSiteProfiles.map((entry) => ({
+        league_id: currentLeagueId,
+        user_id: entry.id,
+        claimed_team_name: entry.team_name,
+      }))
+    );
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not add all accounts to this league.");
+      return;
+    }
+
+    setStatusMessage(`Added ${availableSiteProfiles.length} account${availableSiteProfiles.length === 1 ? "" : "s"} to ${currentLeague?.name ?? "this league"}.`);
+    await loadProfiles();
+  }
+
   async function saveProfile() {
     if (!user) return;
     const nextName = profileDraftName.trim();
@@ -696,16 +987,32 @@ export default function Page() {
       .from("profiles")
       .update({
         username: nextName,
-        team_name: nextTeam || null,
       })
       .eq("id", user.id);
-    setBusy("");
 
     if (error) {
       console.error(error);
+      setBusy("");
       setStatusMessage(error.message || "Could not save your profile.");
       return;
     }
+
+    if (currentLeagueId) {
+      const membershipResult = await supabase
+        .from("league_memberships")
+        .update({ claimed_team_name: nextTeam || null })
+        .eq("league_id", currentLeagueId)
+        .eq("user_id", user.id);
+
+      if (membershipResult.error) {
+        console.error(membershipResult.error);
+        setBusy("");
+        setStatusMessage("Your profile saved, but your league team claim could not be updated.");
+        return;
+      }
+    }
+
+    setBusy("");
 
     setStatusMessage("Profile updated.");
     await loadProfile(user.id);
@@ -803,31 +1110,34 @@ export default function Page() {
     const nextTeamName = team.name;
 
     if (team.owner_user_id && team.owner_user_id !== ownerId) {
-      const previousProfile = profiles.find((entry) => entry.id === team.owner_user_id) ?? null;
-      if (previousProfile?.team_name && normalizeName(previousProfile.team_name) === normalizeName(team.name)) {
-        const { error: previousProfileError } = await supabase
-          .from("profiles")
-          .update({ team_name: null })
-          .eq("id", team.owner_user_id);
+      if (currentLeagueId) {
+        const { error: previousMembershipError } = await supabase
+          .from("league_memberships")
+          .update({ claimed_team_name: null })
+          .eq("league_id", currentLeagueId)
+          .eq("user_id", team.owner_user_id);
 
-        if (previousProfileError) {
-          console.error(previousProfileError);
-          setStatusMessage("The team owner changed, but the previous member profile could not be cleared.");
+        if (previousMembershipError) {
+          console.error(previousMembershipError);
+          setStatusMessage("The team owner changed, but the previous member's league claim could not be cleared.");
           return;
         }
       }
     }
 
     if (ownerId) {
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ team_name: nextTeamName })
-        .eq("id", ownerId);
+      if (currentLeagueId) {
+        const { error: membershipError } = await supabase
+          .from("league_memberships")
+          .update({ claimed_team_name: nextTeamName })
+          .eq("league_id", currentLeagueId)
+          .eq("user_id", ownerId);
 
-      if (profileError) {
-        console.error(profileError);
-        setStatusMessage("Could not sync that member profile to the assigned team.");
-        return;
+        if (membershipError) {
+          console.error(membershipError);
+          setStatusMessage("Could not sync that member's league team claim.");
+          return;
+        }
       }
     }
 
@@ -840,8 +1150,33 @@ export default function Page() {
     if (currentSession) await loadSession(currentSession.id, false);
   }
 
+  async function updateMemberRole(profileEntry: Profile, nextRole: "assistant_commissioner" | "member") {
+    if (!canManagePermissions) {
+      setStatusMessage("Only the commissioner can change member permissions.");
+      return;
+    }
+
+    setBusy("Updating member access...");
+    const { error } = await supabase.rpc("set_member_role", {
+      target_league_id: currentLeagueId,
+      target_user_id: profileEntry.id,
+      next_role: nextRole,
+    });
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(error.message || "Could not update that member access level.");
+      return;
+    }
+
+    setStatusMessage(`Updated ${profileEntry.username} to ${roleLabel(nextRole).toLowerCase()}.`);
+    await loadProfiles();
+    if (currentSession) await loadSession(currentSession.id, false);
+  }
+
   async function removeMember(profileEntry: Profile) {
-    if (!canManageLeague) {
+    if (!canManagePermissions) {
       setStatusMessage("Only the commissioner can remove members.");
       return;
     }
@@ -855,6 +1190,7 @@ export default function Page() {
 
     setBusy("Removing member...");
     const { error } = await supabase.rpc("remove_member_account", {
+      target_league_id: currentLeagueId,
       target_user_id: profileEntry.id,
     });
     setBusy("");
@@ -886,7 +1222,11 @@ export default function Page() {
   }
 
   async function loadSessions() {
-    const { data, error } = await supabase.from("draft_sessions").select("*").order("created_at", { ascending: false });
+    if (!currentLeagueId) {
+      setSessions([]);
+      return;
+    }
+    const { data, error } = await supabase.from("draft_sessions").select("*").eq("league_id", currentLeagueId).order("created_at", { ascending: false });
     if (error) {
       console.error(error);
       setStatusMessage("Could not load tournament sessions from Supabase.");
@@ -1067,22 +1407,22 @@ export default function Page() {
   }
 
   async function createSession() {
-    if (!canManageLeague || !user) return setStatusMessage("Only the commissioner can create new tournament sessions.");
+    if (!canManageLeague || !user || !currentLeagueId) return setStatusMessage("Only a league admin can create new tournament sessions.");
     const trimmedName = newSessionName.trim();
     if (!trimmedName) return setStatusMessage("Type a tournament name before creating a session.");
     setBusy("Creating session...");
     const event = events.find((item) => item.id === newSessionEventId) ?? null;
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
+    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
       return setStatusMessage("Could not create the tournament session.");
     }
-    const profileResult = await supabase.from("profiles").select("id, team_name").not("team_name", "is", null);
+    const membershipResult = await supabase.from("league_memberships").select("user_id, claimed_team_name").eq("league_id", currentLeagueId).not("claimed_team_name", "is", null);
     const ownerByTeam = new Map(
-      (((profileResult.data ?? []) as Pick<Profile, "id" | "team_name">[])
-        .filter((entry): entry is Pick<Profile, "id" | "team_name"> & { team_name: string } => !!entry.team_name)
-        .map((entry) => [normalizeName(entry.team_name), entry.id]))
+      (((membershipResult.data ?? []) as Pick<LeagueMembership, "user_id" | "claimed_team_name">[])
+        .filter((entry): entry is Pick<LeagueMembership, "user_id" | "claimed_team_name"> & { claimed_team_name: string } => !!entry.claimed_team_name)
+        .map((entry) => [normalizeName(entry.claimed_team_name), entry.user_id]))
     );
     const teamsInsert = await supabase.from("draft_teams").insert(DEFAULT_TEAM_NAMES.map((name) => ({
       session_id: sessionInsert.data.id,
@@ -1441,7 +1781,7 @@ export default function Page() {
         <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
           <div className="rrg-card w-full rounded-[2rem] p-8">
             <BrandMark compact />
-            <p className="mb-0 mt-4 text-[#617061]">Loading your league access...</p>
+            <p className="mb-0 mt-4 text-[#617061]">{statusMessage || "Loading your league access..."}</p>
           </div>
         </div>
       </div>
@@ -1496,9 +1836,16 @@ export default function Page() {
             <div className="grid justify-items-end gap-2">
               <div className="flex flex-wrap justify-end gap-2 text-xs">
                 <span className="rounded-full bg-white/80 px-3 py-1 text-[#1a5c3a]">{profile?.username}</span>
-                <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-[#1a5c3a]">{isSiteAdmin ? "Site Admin" : roleLabel(effectiveRole)}</span>
+                {leagues.length > 1 ? (
+                  <select className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" value={currentLeagueId} onChange={(event) => changeActiveLeague(event.target.value)}>
+                    {leagues.map((league) => <option key={league.id} value={league.id}>{league.name}</option>)}
+                  </select>
+                ) : currentLeague ? (
+                  <span className="rounded-full bg-white/80 px-3 py-1 text-[#6a5940]">{currentLeague.name}</span>
+                ) : null}
                 <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "profile" ? "bg-[#1a5c3a] text-white" : "bg-[#f7f2e9] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("profile")}>Profile</button>
-                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (showTeamPill ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{profile?.team_name}</span> : null)}
+                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (showTeamPill ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{activeTeamName}</span> : null)}
               </div>
               <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
             </div>
@@ -1662,6 +2009,29 @@ export default function Page() {
                         <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{teams.length} total teams</span>
                       </div>
                       <div className="grid gap-4">
+                        {isSiteAdmin ? (
+                          <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <h4 className="m-0 font-[Georgia] text-lg">Site Admin</h4>
+                              <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{leagues.length} leagues</span>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
+                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueName} onChange={(event) => { setNewLeagueName(event.target.value); if (!newLeagueSlug) setNewLeagueSlug(slugifyLeagueName(event.target.value)); }} placeholder="New league name" />
+                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueSlug} onChange={(event) => setNewLeagueSlug(slugifyLeagueName(event.target.value))} placeholder="league-slug" />
+                              <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={createLeague}>Create League</button>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                              <select className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueMemberId} onChange={(event) => setNewLeagueMemberId(event.target.value)}>
+                                <option value="">{availableSiteProfiles.length ? "Add existing account to this league" : "All accounts are in this league"}</option>
+                                {availableSiteProfiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username, entry.team_name)}</option>)}
+                              </select>
+                              <div className="flex flex-wrap gap-2">
+                                <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={addExistingMemberToLeague}>Add Member</button>
+                                <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white disabled:opacity-50" disabled={!availableSiteProfiles.length} onClick={addAllExistingMembersToLeague}>Add All</button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
                         <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
                           <div className="flex items-center justify-between gap-3">
                             <h4 className="m-0 font-[Georgia] text-lg">Signed-Up Members</h4>
@@ -1674,10 +2044,10 @@ export default function Page() {
                                     <div className="flex items-start justify-between gap-3">
                                       <div className="grid gap-1">
                                         <strong>{entry.username}</strong>
-                                        <span className="text-[#617061]">{entry.role === "commissioner" ? "Commissioner" : "Member"}</span>
+                                        <span className="text-[#617061]">{roleLabel(entry.role)}</span>
                                         <span className="text-[#617061]">{entry.team_name ? `Claimed team: ${entry.team_name}` : "No team claimed yet"}</span>
                                       </div>
-                                      {entry.role !== "commissioner" ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => removeMember(entry)}>Remove</button> : null}
+                                      {canManagePermissions && entry.role !== "commissioner" ? <div className="grid gap-2 justify-items-end"><select className="rounded-xl border border-black/15 bg-white px-2 py-1 text-xs" value={entry.role} onChange={(event) => updateMemberRole(entry, event.target.value as "assistant_commissioner" | "member")}><option value="member">Member</option><option value="assistant_commissioner">Assistant Commissioner</option></select><button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => removeMember(entry)}>Remove</button></div> : null}
                                     </div>
                                   </div>
                                 ))}
@@ -1704,7 +2074,7 @@ export default function Page() {
                                 {profiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username, entry.team_name)}</option>)}
                               </select>
                               <div className="flex flex-wrap items-center justify-between gap-2 text-sm xl:justify-end xl:pl-2">
-                                <span className="text-[#617061]">{team.draft_slot ? `Pick ${team.draft_slot} this week` : "Not in this week's draft"}{team.owner_user_id ? " · Owner assigned" : ""}</span>
+                                <span className="text-[#617061]">{team.draft_slot ? `Pick ${team.draft_slot} this week` : "Not in this week's draft"}{team.owner_user_id ? " - Owner assigned" : ""}</span>
                                 {team.draft_slot === null ? (
                                   <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-sm text-[#9d4b2f]" onClick={() => deleteTeam(team)}>Delete</button>
                                 ) : (
@@ -1724,7 +2094,7 @@ export default function Page() {
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                         <div className="mb-4 flex items-center justify-between gap-3">
                           <h3 className="m-0 font-[Georgia] text-xl">My Profile</h3>
-                          <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{isCommissioner ? "Commissioner" : "Member"}</span>
+                          <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{isSiteAdmin ? "Site Admin" : roleLabel(effectiveRole)}</span>
                         </div>
                         <div className="grid gap-3 md:max-w-[520px]">
                         <label className="grid gap-1 text-sm text-[#617061]">
@@ -1912,7 +2282,7 @@ export default function Page() {
                                       </button>
                                     )}
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
-                                  Last updated: {resultsUpdatedLabel}{resultsFinalized ? " · Finalized" : ""}
+                                  Last updated: {resultsUpdatedLabel}{resultsFinalized ? " - Finalized" : ""}
                                 </div>
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
                                   {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
@@ -1938,9 +2308,7 @@ export default function Page() {
                                       {player.total ? <span className={`shrink-0 text-sm font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
                                     </div>
                                     <div className="text-[11px] text-[#617061]">
-                                      {player.position
-                                        ? `${`P${player.position}`}${player.thru ? ` · ${player.thru}` : ""}`
-                                        : player.thru || "CUT / no finish"}
+                                      {resultStatusLabel(player.position, player.thru, player.meta)}
                                     </div>
                                   </div>
                                   <div className="text-right">
@@ -1949,7 +2317,7 @@ export default function Page() {
                                   </div>
                                   <div className="col-span-2 mt-1 grid grid-cols-9 gap-1">
                                     {Array.from({ length: 18 }, (_, holeIndex) => {
-                                      const filled = holeIndex < holesCompletedFromThru(player.thru);
+                                      const filled = holeIndex < holesCompletedForDisplay(player.thru, player.meta);
                                       return (
                                         <span
                                           key={`${player.id}-hole-${holeIndex + 1}`}
