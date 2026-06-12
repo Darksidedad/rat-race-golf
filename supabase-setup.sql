@@ -29,10 +29,17 @@ create table if not exists public.league_memberships (
 );
 create table if not exists public.draft_sessions (
   id uuid primary key default gen_random_uuid(),
+  event_tour text not null default 'pga',
   name text not null,
   event_id text,
   event_name text,
   player_input text not null default '',
+  field_source text,
+  field_refreshed_at timestamptz,
+  odds_snapshot jsonb not null default '{}'::jsonb,
+  odds_source text,
+  odds_refreshed_at timestamptz,
+  field_locked_at timestamptz,
   manual_leaderboard_input text not null default '',
   current_positions jsonb not null default '{}'::jsonb,
   current_totals jsonb not null default '{}'::jsonb,
@@ -76,6 +83,13 @@ alter table public.league_memberships add column if not exists claimed_team_name
 alter table public.draft_sessions add column if not exists commissioner_id uuid references public.profiles(id) on delete set null;
 alter table public.draft_sessions add column if not exists current_totals jsonb not null default '{}'::jsonb;
 alter table public.draft_sessions add column if not exists league_id uuid references public.leagues(id) on delete cascade;
+alter table public.draft_sessions add column if not exists event_tour text not null default 'pga';
+alter table public.draft_sessions add column if not exists field_source text;
+alter table public.draft_sessions add column if not exists field_refreshed_at timestamptz;
+alter table public.draft_sessions add column if not exists odds_snapshot jsonb not null default '{}'::jsonb;
+alter table public.draft_sessions add column if not exists odds_source text;
+alter table public.draft_sessions add column if not exists odds_refreshed_at timestamptz;
+alter table public.draft_sessions add column if not exists field_locked_at timestamptz;
 alter table public.profiles drop constraint if exists profiles_active_league_fkey;
 alter table public.profiles add constraint profiles_active_league_fkey foreign key (active_league_id) references public.leagues(id) on delete set null;
 alter table public.draft_teams add column if not exists owner_user_id uuid references public.profiles(id) on delete set null;

@@ -5,14 +5,21 @@ import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
-type EventOption = { id: string; name: string };
+type EventOption = { id: string; name: string; dateLabel?: string; location?: string; course?: string };
 type DraftSession = {
   id: string;
   league_id: string | null;
+  event_tour: string | null;
   name: string;
   event_id: string | null;
   event_name: string | null;
   player_input: string;
+  field_source?: string | null;
+  field_refreshed_at?: string | null;
+  odds_snapshot?: Record<string, number> | null;
+  odds_source?: string | null;
+  odds_refreshed_at?: string | null;
+  field_locked_at?: string | null;
   manual_leaderboard_input: string | null;
   current_positions: Record<string, number | null> | null;
   current_totals: Record<string, string | null> | null;
@@ -26,6 +33,7 @@ type Profile = { id: string; username: string; team_name: string | null; role: "
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
 type League = { id: string; name: string; slug: string; created_by: string | null; created_at: string };
 type LeagueMembership = { id: string; league_id: string; user_id: string; role: Profile["role"]; claimed_team_name: string | null; created_at: string };
+type NewDraftTeam = { name: string; selected: boolean };
 type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; source?: string; error?: string };
 type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
@@ -49,6 +57,15 @@ type SeasonTeamStat = {
 
 const ROUNDS = 4;
 const DEFAULT_TEAM_NAMES = ["Ryan","Morris","Russ","Swany","Capps","Seth","Jay","Teron","Jesse","Drew","Jimmy","Jones"];
+const DEFAULT_NEW_DRAFT_TEAMS: NewDraftTeam[] = DEFAULT_TEAM_NAMES.map((name) => ({ name, selected: true }));
+const TOUR_OPTIONS = [
+  { id: "pga", label: "PGA TOUR" },
+  { id: "lpga", label: "LPGA Tour" },
+  { id: "ntw", label: "Korn Ferry Tour" },
+  { id: "eur", label: "DP World Tour" },
+  { id: "champions", label: "PGA TOUR Champions" },
+  { id: "liv", label: "LIV Golf" },
+];
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",
@@ -73,6 +90,31 @@ function normalizeName(name: string) {
 function formatOdds(odds: number | null | undefined) {
   if (!Number.isFinite(odds)) return null;
   return odds && odds > 0 ? `+${odds}` : String(odds);
+}
+
+function formatRefreshTime(value: string | null | undefined) {
+  if (!value) return "Never";
+  return new Date(value).toLocaleString();
+}
+
+function formatEventDropdownOption(event: EventOption) {
+  return event.dateLabel ? `${event.name} (${event.dateLabel})` : event.name;
+}
+
+function formatPlayerPoolInputWithOdds(playerInput: string, odds: Record<string, number>) {
+  return formatPlayerPoolInput(playerInput)
+    .split("\n")
+    .map((player) => {
+      const oddsValue = lookupOddsForPlayer(player, odds);
+      const oddsLabel = formatOdds(oddsValue);
+      return oddsLabel ? `${player} ${oddsLabel}` : player;
+    })
+    .join("\n");
+}
+
+function courseWebsiteUrl(event: EventOption) {
+  const query = [event.course, event.location, "official website"].filter(Boolean).join(" ");
+  return `https://www.google.com/search?btnI=1&q=${encodeURIComponent(query)}`;
 }
 
 function extractAmericanOdds(line: string) {
@@ -322,6 +364,30 @@ function lookupLeaderboardValue<T>(playerName: string, values: Record<string, T>
   return matchedKey ? values[matchedKey] : undefined;
 }
 
+function randomInt(maxExclusive: number) {
+  if (maxExclusive <= 0) return 0;
+  if (typeof window === "undefined" || !window.crypto?.getRandomValues) {
+    return Math.floor(Math.random() * maxExclusive);
+  }
+
+  const limit = Math.floor(0xffffffff / maxExclusive) * maxExclusive;
+  const values = new Uint32Array(1);
+  do {
+    window.crypto.getRandomValues(values);
+  } while (values[0] >= limit);
+
+  return values[0] % maxExclusive;
+}
+
+function shuffled<T>(items: T[]) {
+  const next = [...items];
+  for (let index = next.length - 1; index > 0; index -= 1) {
+    const swapIndex = randomInt(index + 1);
+    [next[index], next[swapIndex]] = [next[swapIndex], next[index]];
+  }
+  return next;
+}
+
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`rrg-brand ${compact ? "rrg-brand--compact" : ""}`} aria-label="Rat Race Golf">
@@ -357,8 +423,11 @@ export default function Page() {
   const [teams, setTeams] = useState<DraftTeam[]>([]);
   const [picks, setPicks] = useState<DraftPick[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
-  const [newSessionName, setNewSessionName] = useState("");
+  const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
+  const [newDraftTour, setNewDraftTour] = useState("pga");
   const [newSessionEventId, setNewSessionEventId] = useState("");
+  const [newDraftModalOpen, setNewDraftModalOpen] = useState(false);
+  const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
   const [newLeagueName, setNewLeagueName] = useState("");
   const [newLeagueSlug, setNewLeagueSlug] = useState("");
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
@@ -385,9 +454,14 @@ export default function Page() {
   const [highlightedPlayerIndex, setHighlightedPlayerIndex] = useState(0);
   const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
   const [oddsSource, setOddsSource] = useState("");
+  const [autoFieldImportAttempts, setAutoFieldImportAttempts] = useState<Record<string, boolean>>({});
+  const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
   const currentMembership = useMemo(() => memberships.find((membership) => membership.league_id === currentLeagueId && membership.user_id === user?.id) ?? null, [currentLeagueId, memberships, user?.id]);
+  const selectedNewDraftEvent = useMemo(() => events.find((event) => event.id === newSessionEventId) ?? null, [events, newSessionEventId]);
+  const selectedCurrentSessionEvent = useMemo(() => events.find((event) => event.id === currentSession?.event_id) ?? null, [events, currentSession?.event_id]);
+  const currentSessionDisplayEvent = currentSessionEventDetails ?? selectedCurrentSessionEvent;
   const effectiveRole = currentMembership?.role ?? profile?.role ?? "member";
   const isSiteAdmin = profile?.site_role === "site_admin";
   const isCommissioner = effectiveRole === "commissioner";
@@ -395,9 +469,16 @@ export default function Page() {
   const isLeagueAdmin = isSiteAdmin || isCommissioner || isAssistantCommissioner;
 
   useEffect(() => {
-    loadEvents();
     initializeAuth();
   }, []);
+
+  useEffect(() => {
+    loadEvents(newDraftTour);
+  }, [newDraftTour]);
+
+  useEffect(() => {
+    loadCurrentSessionEventDetails();
+  }, [currentSession?.event_id, currentSession?.event_tour]);
 
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
@@ -471,13 +552,18 @@ export default function Page() {
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
+    if (currentSession?.odds_snapshot && Object.keys(currentSession.odds_snapshot).length) {
+      setOddsByPlayer(currentSession.odds_snapshot);
+      setOddsSource(currentSession.odds_source ?? "");
+      return;
+    }
     if (!currentSession?.event_name) {
       setOddsByPlayer({});
       setOddsSource("");
       return;
     }
     loadOdds(currentSession.event_name);
-  }, [currentSession?.event_name]);
+  }, [currentSession?.event_name, currentSession?.odds_snapshot, currentSession?.odds_source]);
 
   useEffect(() => {
     if (!profile || isLeagueAdmin) return;
@@ -611,6 +697,14 @@ export default function Page() {
   }, [profiles, siteProfiles]);
 
   useEffect(() => {
+    autoImportMissingPlayerPool();
+  }, [canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.player_input]);
+
+  useEffect(() => {
+    autoRefreshFieldBeforeDraft();
+  }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
+
+  useEffect(() => {
     if (!availablePlayers.length) {
       setHighlightedPlayerIndex(0);
       return;
@@ -659,7 +753,6 @@ export default function Page() {
     });
     if (defaultLeagueResult.error) {
       console.error(defaultLeagueResult.error);
-      setStatusMessage("Could not verify your league membership.");
     }
 
     await loadLeagueContext(userId, nextProfile);
@@ -1260,16 +1353,43 @@ export default function Page() {
     setBusy("");
   }
 
-  async function loadEvents() {
+  async function loadEvents(tourId = newDraftTour) {
     try {
-      const response = await fetch("/api/espn-golf?action=events");
+      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}`);
       const payload: EspnEventsResponse = await response.json();
       if (!payload.ok || !payload.events) throw new Error(payload.error);
       setEvents(payload.events);
-      if (!newSessionEventId && payload.events[0]?.id) setNewSessionEventId(payload.events[0].id);
+      setNewSessionEventId((current) => payload.events?.some((event) => event.id === current) ? current : payload.events?.[0]?.id ?? "");
     } catch (error) {
       console.error(error);
-      setStatusMessage("Could not load PGA events from ESPN.");
+      setEvents([]);
+      setNewSessionEventId("");
+      setStatusMessage(`Could not load ${TOUR_OPTIONS.find((tour) => tour.id === tourId)?.label ?? "tour"} events from ESPN.`);
+    }
+  }
+
+  async function loadCurrentSessionEventDetails() {
+    if (!currentSession?.event_id) {
+      setCurrentSessionEventDetails(null);
+      return;
+    }
+
+    try {
+      const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
+      for (const tourId of toursToCheck) {
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}`);
+        const payload: EspnEventsResponse = await response.json();
+        if (!payload.ok || !payload.events) continue;
+        const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
+        if (eventDetails) {
+          setCurrentSessionEventDetails(eventDetails);
+          return;
+        }
+      }
+      setCurrentSessionEventDetails(null);
+    } catch (error) {
+      console.error(error);
+      setCurrentSessionEventDetails(null);
     }
   }
 
@@ -1302,6 +1422,38 @@ export default function Page() {
     setStatusMessage(message);
     await loadSessions();
     await loadSession(currentSession.id, false);
+    return true;
+  }
+
+  async function saveFieldSnapshot(sessionId: string, field: Awaited<ReturnType<typeof fetchEspnFieldInput>>, eventName: string | null | undefined, message: string) {
+    const refreshedAt = new Date().toISOString();
+    const snapshotPatch = {
+      player_input: field.playerInput,
+      event_name: field.eventName ?? eventName ?? null,
+      field_source: field.fieldSource,
+      field_refreshed_at: refreshedAt,
+      odds_snapshot: field.odds,
+      odds_source: field.oddsSource,
+      odds_refreshed_at: field.oddsCount ? refreshedAt : null,
+    };
+
+    const { error } = await supabase.from("draft_sessions").update(snapshotPatch).eq("id", sessionId);
+    if (error) {
+      console.error(error);
+      const fallback = await supabase.from("draft_sessions").update({ player_input: field.playerInput, event_name: field.eventName ?? eventName ?? null }).eq("id", sessionId);
+      if (fallback.error) {
+        console.error(fallback.error);
+        setStatusMessage("Could not save the refreshed player field.");
+        return false;
+      }
+    }
+
+    setPlayerPoolDraft(field.playerInput);
+    setOddsByPlayer(field.odds);
+    setOddsSource(field.oddsSource);
+    setStatusMessage(message);
+    await loadSessions();
+    await loadSession(sessionId, false);
     return true;
   }
 
@@ -1406,17 +1558,116 @@ export default function Page() {
     await loadSessions();
   }
 
+  function resetNewDraftForm() {
+    setNewDraftTeams(DEFAULT_NEW_DRAFT_TEAMS);
+    if (events[0]?.id) setNewSessionEventId(events[0].id);
+  }
+
+  function toggleNewDraftTeam(teamName: string) {
+    setNewDraftTeams((current) => current.map((team) => team.name === teamName ? { ...team, selected: !team.selected } : team));
+  }
+
+  function moveNewDraftTeam(teamName: string, direction: "up" | "down") {
+    setNewDraftTeams((current) => {
+      const index = current.findIndex((team) => team.name === teamName);
+      if (index < 0) return current;
+      const targetIndex = direction === "up" ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= current.length) return current;
+      const next = [...current];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return next;
+    });
+  }
+
+  function randomizeNewDraftOrder() {
+    setNewDraftTeams((current) => {
+      const selected = shuffled(current.filter((team) => team.selected));
+      const unselected = current.filter((team) => !team.selected);
+      return [...selected, ...unselected];
+    });
+    setStatusMessage("Randomized the draft order with browser crypto randomness.");
+  }
+
+  async function copyTeamsAndOpenDuckRace() {
+    const selectedTeamNames = newDraftTeams.filter((team) => team.selected).map((team) => team.name);
+    if (!selectedTeamNames.length) {
+      setStatusMessage("Select at least one team before opening Duck Race.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(selectedTeamNames.join("\n"));
+      setStatusMessage("Copied the selected teams. Paste them into Duck Race if you want a visual race.");
+    } catch (error) {
+      console.error(error);
+      setStatusMessage("Could not copy the team list, but Duck Race is opening.");
+    }
+
+    window.open("https://www.online-stopwatch.com/duck-race/", "_blank", "noopener,noreferrer");
+  }
+
+  async function fetchEspnFieldInput(eventId: string, tourId: string | null | undefined) {
+    const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
+    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}`);
+    const payload: EspnFieldResponse = await response.json();
+    if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
+    const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
+    if (!cleanedPlayers.length) throw new Error("ESPN returned a field, but no valid golfer names were found.");
+    let odds: Record<string, number> = {};
+    let oddsSource = "";
+    if (payload.eventName) {
+      try {
+        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}`);
+        const oddsPayload: EspnOddsResponse = await oddsResponse.json();
+        odds = oddsPayload.ok && oddsPayload.odds ? oddsPayload.odds : {};
+        oddsSource = oddsPayload.source ?? "";
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    const basePlayerInput = formatPlayerPoolInput(payload.players.join("\n"));
+    const playerInput = Object.keys(odds).length ? formatPlayerPoolInputWithOdds(basePlayerInput, odds) : basePlayerInput;
+    return {
+      eventName: payload.eventName,
+      playerInput,
+      playerCount: cleanedPlayers.length,
+      fieldSource: payload.source ?? "",
+      odds,
+      oddsSource,
+      oddsCount: Object.keys(odds).length,
+    };
+  }
+
   async function createSession() {
     if (!canManageLeague || !user || !currentLeagueId) return setStatusMessage("Only a league admin can create new tournament sessions.");
-    const trimmedName = newSessionName.trim();
-    if (!trimmedName) return setStatusMessage("Type a tournament name before creating a session.");
-    setBusy("Creating session...");
     const event = events.find((item) => item.id === newSessionEventId) ?? null;
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, name: trimmedName, event_id: event?.id ?? null, event_name: event?.name ?? null, player_input: "", manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
+    if (!event) return setStatusMessage("Select a tournament before creating the draft room.");
+    const trimmedName = event.name.trim();
+    const selectedDraftTeams = newDraftTeams.filter((team) => team.selected);
+    if (!selectedDraftTeams.length) return setStatusMessage("Select at least one team for this draft.");
+    setBusy("Creating session...");
+    let playerInput = "";
+    let importedPlayerCount = 0;
+    let importedOddsCount = 0;
+    let fieldImportMessage = "";
+    let importedField: Awaited<ReturnType<typeof fetchEspnFieldInput>> | null = null;
+    try {
+      const field = await fetchEspnFieldInput(event.id, newDraftTour);
+      importedField = field;
+      playerInput = field.playerInput;
+      importedPlayerCount = field.playerCount;
+      importedOddsCount = field.oddsCount;
+      setOddsByPlayer(field.odds);
+      setOddsSource(field.oddsSource);
+    } catch (error) {
+      console.error(error);
+      fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
+    }
+    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
-      return setStatusMessage("Could not create the tournament session.");
+      return setStatusMessage(`Could not create the tournament session${sessionInsert.error?.message ? `: ${sessionInsert.error.message}` : "."}`);
     }
     const membershipResult = await supabase.from("league_memberships").select("user_id, claimed_team_name").eq("league_id", currentLeagueId).not("claimed_team_name", "is", null);
     const ownerByTeam = new Map(
@@ -1424,23 +1675,29 @@ export default function Page() {
         .filter((entry): entry is Pick<LeagueMembership, "user_id" | "claimed_team_name"> & { claimed_team_name: string } => !!entry.claimed_team_name)
         .map((entry) => [normalizeName(entry.claimed_team_name), entry.user_id]))
     );
-    const teamsInsert = await supabase.from("draft_teams").insert(DEFAULT_TEAM_NAMES.map((name) => ({
+    const teamsInsert = await supabase.from("draft_teams").insert(newDraftTeams.map((team) => ({
       session_id: sessionInsert.data.id,
-      name,
-      draft_slot: null,
-      active: false,
-      owner_user_id: ownerByTeam.get(normalizeName(name)) ?? null,
+      name: team.name,
+      draft_slot: team.selected ? selectedDraftTeams.findIndex((entry) => entry.name === team.name) + 1 : null,
+      active: team.selected,
+      owner_user_id: ownerByTeam.get(normalizeName(team.name)) ?? null,
     })));
     if (teamsInsert.error) {
       console.error(teamsInsert.error);
       setBusy("");
-      return setStatusMessage("The session was created, but the teams were not saved.");
+      return setStatusMessage(`The session was created, but the teams were not saved${teamsInsert.error.message ? `: ${teamsInsert.error.message}` : "."}`);
     }
-    setNewSessionName("");
+    resetNewDraftForm();
+    setNewDraftModalOpen(false);
     setSelectedSessionId(sessionInsert.data.id);
-    setStatusMessage(`Created live draft session "${sessionInsert.data.name}".`);
+    if (importedField) {
+      await saveFieldSnapshot(sessionInsert.data.id, importedField, event.name, `Created live draft session "${sessionInsert.data.name}" with ${importedPlayerCount} golfers${importedOddsCount ? " and betting odds" : ""}.`);
+    } else {
+      setStatusMessage(`Created live draft session "${sessionInsert.data.name}".${fieldImportMessage}`);
+    }
+    setActiveRoomTab("draft");
     setBusy("");
-    await loadSessions();
+    if (!importedField) await loadSessions();
   }
 
   async function assignNextPick(team: DraftTeam) {
@@ -1495,6 +1752,7 @@ export default function Page() {
 
     async function savePlayerPool() {
       if (!canManageLeague) return setStatusMessage("Only the commissioner can save the player pool.");
+      if (picks.length) return setStatusMessage("The field and odds are locked after the first pick. Undo picks before changing the player pool.");
       setBusy("Saving player pool...");
       const cleanedPlayers = parsePlayerPoolInput(playerPoolDraft);
       if (!cleanedPlayers.length) {
@@ -1510,16 +1768,11 @@ export default function Page() {
   async function importFieldFromEspn() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can import the field.");
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before importing the field.");
+    if (picks.length) return setStatusMessage("The field and odds are locked after the first pick. Reopen this only by undoing picks first.");
     setBusy("Importing field...");
     try {
-        const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(currentSession.event_id)}`);
-        const payload: EspnFieldResponse = await response.json();
-        if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
-        const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
-        if (!cleanedPlayers.length) throw new Error("ESPN returned a field, but no valid golfer names were found.");
-        const playerInput = formatPlayerPoolInput(payload.players.join("\n"));
-        setPlayerPoolDraft(playerInput);
-        await updateSession({ player_input: playerInput, event_name: payload.eventName ?? currentSession.event_name }, `Imported ${cleanedPlayers.length} golfers from ESPN after cleaning duplicates, team rows, and invalid rows.`);
+        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+        await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN after cleaning duplicates, team rows, and invalid rows.`);
       } catch (error) {
         console.error(error);
         setStatusMessage(error instanceof Error && error.message ? error.message : "Could not import the player field from ESPN.");
@@ -1527,12 +1780,54 @@ export default function Page() {
       setBusy("");
     }
 
+  async function autoImportMissingPlayerPool() {
+    if (!canManageLeague || !currentSession?.id || !currentSession.event_id) return;
+    if (picks.length) return;
+    if (currentSession.player_input?.trim()) return;
+    if (autoFieldImportAttempts[currentSession.id]) return;
+
+    setAutoFieldImportAttempts((current) => ({ ...current, [currentSession.id]: true }));
+    setBusy("Importing ESPN field...");
+    try {
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+      await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Auto-imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN.`);
+    } catch (error) {
+      console.error(error);
+      setStatusMessage(error instanceof Error && error.message ? `Auto import failed: ${error.message}` : "Auto import failed. Use Setup to import the field manually.");
+    }
+    setBusy("");
+  }
+
+  async function autoRefreshFieldBeforeDraft() {
+    if (!canManageLeague || activeRoomTab !== "draft" || !currentSession?.id || !currentSession.event_id) return;
+    if (picks.length || autoFieldRefreshAttempts[currentSession.id]) return;
+
+    const fieldRefreshedAt = currentSession.field_refreshed_at ? new Date(currentSession.field_refreshed_at).getTime() : 0;
+    const oddsRefreshedAt = currentSession.odds_refreshed_at ? new Date(currentSession.odds_refreshed_at).getTime() : 0;
+    const oldestRefresh = Math.min(fieldRefreshedAt || Number.POSITIVE_INFINITY, oddsRefreshedAt || Number.POSITIVE_INFINITY);
+    const sixHours = 6 * 60 * 60 * 1000;
+    const needsRefresh = !fieldRefreshedAt || !oddsRefreshedAt || Date.now() - oldestRefresh > sixHours;
+    if (!needsRefresh) return;
+
+    setAutoFieldRefreshAttempts((current) => ({ ...current, [currentSession.id]: true }));
+    setBusy("Refreshing field and odds...");
+    try {
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+      await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Refreshed ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} before the draft started.`);
+    } catch (error) {
+      console.error(error);
+      setStatusMessage(error instanceof Error && error.message ? `Refresh failed: ${error.message}` : "Refresh failed. Use Setup to refresh the field manually.");
+    }
+    setBusy("");
+  }
+
   async function pullLeaderboard() {
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
     if (currentSession.status === "finalized") return setStatusMessage("This tournament is finalized. Reopen results before refreshing the leaderboard.");
     setBusy("Pulling leaderboard...");
     try {
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}`);
+      const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
+      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}`);
       const payload: EspnLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
@@ -1566,11 +1861,7 @@ export default function Page() {
       return;
     }
 
-    const randomPool = [...availablePlayers];
-    for (let index = randomPool.length - 1; index > 0; index -= 1) {
-      const swapIndex = Math.floor(Math.random() * (index + 1));
-      [randomPool[index], randomPool[swapIndex]] = [randomPool[swapIndex], randomPool[index]];
-    }
+    const randomPool = shuffled(availablePlayers);
 
     setBusy("Random drafting...");
     const generatedPicks: Omit<DraftPick, "id" | "created_at">[] = [];
@@ -1674,6 +1965,10 @@ export default function Page() {
     const playerKey = normalizeName(playerName);
     if (draftedKeys.has(playerKey)) return setStatusMessage(`${playerName} has already been drafted.`);
     setBusy("Saving pick...");
+    if (!picks.length && !currentSession.field_locked_at) {
+      const lockResult = await supabase.from("draft_sessions").update({ field_locked_at: new Date().toISOString() }).eq("id", currentSession.id);
+      if (lockResult.error) console.error(lockResult.error);
+    }
     const insertResult = await supabase.from("draft_picks").insert([{ session_id: currentSession.id, team_id: currentTeamOnClock.id, player_name: playerName, player_key: playerKey, pick_number: picks.length + 1, round_number: currentRound }]);
     if (insertResult.error) {
       console.error(insertResult.error);
@@ -1851,6 +2146,97 @@ export default function Page() {
             </div>
         </div>
 
+        {newDraftModalOpen ? (
+          <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 px-4 py-6">
+            <div className="grid max-h-[92vh] w-full max-w-[980px] gap-5 overflow-auto rounded-3xl bg-[#fbf7ef] p-5 text-[#1f2a1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="m-0 font-[Georgia] text-3xl">New Draft</h2>
+                  <div className="mt-1 text-sm text-[#617061]">Choose the tournament, teams, and draft order before creating the room.</div>
+                </div>
+                <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-sm text-[#9d4b2f]" onClick={() => setNewDraftModalOpen(false)}>Close</button>
+              </div>
+
+              <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,0.9fr)_minmax(360px,1.1fr)]">
+                <div className="relative z-10 grid min-w-0 content-start gap-4">
+                  <div className="grid min-w-0 gap-2 rounded-2xl border border-black/10 bg-white/80 p-4">
+                    <label className="grid min-w-0 gap-1 text-sm text-[#617061]">
+                      <span className="font-medium text-[#1f2a1d]">Professional Tour</span>
+                      <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={newDraftTour} onChange={(event) => setNewDraftTour(event.target.value)}>
+                        {TOUR_OPTIONS.map((tour) => <option key={tour.id} value={tour.id}>{tour.label}</option>)}
+                      </select>
+                    </label>
+                    <label className="grid min-w-0 gap-1 text-sm text-[#617061]">
+                      <span className="font-medium text-[#1f2a1d]">Tournament</span>
+                      <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
+                        <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
+                        {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
+                      </select>
+                    </label>
+                    {selectedNewDraftEvent ? (
+                      <div className="grid min-w-0 gap-2 overflow-hidden rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+                        <div className="min-w-0 truncate text-base font-semibold text-[#1f2a1d]">{selectedNewDraftEvent.name}</div>
+                        <div className="min-w-0">
+                          <div className="truncate">{selectedNewDraftEvent.course ?? "Course TBD"}</div>
+                          {selectedNewDraftEvent.location ? <div className="truncate">{selectedNewDraftEvent.location}</div> : null}
+                        </div>
+                        <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedNewDraftEvent.dateLabel ?? "Date TBD"}</div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="m-0 font-[Georgia] text-xl">Draft Order Tools</h3>
+                      <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{newDraftTeams.filter((team) => team.selected).length} teams</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button className="rounded-full bg-[#f6d77a] px-4 py-2 font-semibold text-[#1f2a1d]" onClick={randomizeNewDraftOrder}>Randomize Order</button>
+                      <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={copyTeamsAndOpenDuckRace}>Copy Teams & Open Duck Race</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative z-0 grid min-w-0 gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="m-0 font-[Georgia] text-xl">Teams Playing</h3>
+                    <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Drag-free order controls</span>
+                  </div>
+                  <div className="grid max-h-[520px] gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2">
+                    {newDraftTeams.map((team, index) => {
+                      const selectedTeams = newDraftTeams.filter((entry) => entry.selected);
+                      const selectedIndex = team.selected ? selectedTeams.findIndex((entry) => entry.name === team.name) : -1;
+                      return (
+                        <div key={team.name} className={`grid gap-3 rounded-2xl border px-3 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center ${team.selected ? "border-[#1a5c3a]/35 bg-white" : "border-black/10 bg-white/60 text-[#617061]"}`}>
+                          <label className="flex items-center gap-2 text-sm font-medium">
+                            <input type="checkbox" checked={team.selected} onChange={() => toggleNewDraftTeam(team.name)} />
+                            {team.selected ? `#${selectedIndex + 1}` : "Out"}
+                          </label>
+                          <div className="min-w-0 font-semibold">{team.name}</div>
+                          <div className="flex gap-2">
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-sm text-[#1a5c3a] disabled:opacity-40" disabled={index === 0} onClick={() => moveNewDraftTeam(team.name, "up")}>Up</button>
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-sm text-[#1a5c3a] disabled:opacity-40" disabled={index === newDraftTeams.length - 1} onClick={() => moveNewDraftTeam(team.name, "down")}>Down</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
+                <div className="text-sm text-[#617061]">{busy || statusMessage}</div>
+                <div className="flex flex-wrap gap-2">
+                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={resetNewDraftForm}>Reset</button>
+                  <button className="rounded-full bg-[#1a5c3a] px-5 py-2 font-semibold text-white disabled:opacity-50" disabled={busy === "Creating session..."} onClick={createSession}>
+                    {busy === "Creating session..." ? busy : "Create Draft Room"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
         <section className="rrg-card rounded-3xl p-5 lg:sticky lg:top-4">
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -1859,12 +2245,10 @@ export default function Page() {
           </div>
             {canManageLeague ? (
               <div className="grid min-w-0 gap-3">
-                <input className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionName} onChange={(event) => setNewSessionName(event.target.value)} placeholder="Tournament name" />
-                <select className="w-full min-w-0 rounded-xl border border-black/15 bg-white px-3 py-3" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
-                  <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
-                  {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
-                </select>
-                <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={createSession}>Create Live Session</button>
+                <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 font-semibold text-white" onClick={() => setNewDraftModalOpen(true)}>New Draft</button>
+                <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+                  Set the event, teams, and draft order before the room opens.
+                </div>
               </div>
             ) : (
               <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
@@ -1952,23 +2336,39 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="my-1 h-px bg-black/10" />
-                        <select className="rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
+                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
                           <option value="">No event selected</option>
-                          {events.map((event) => <option key={event.id} value={event.id}>{event.name}</option>)}
+                          {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
                         </select>
+                        {selectedCurrentSessionEvent ? (
+                          <div className="grid min-w-0 gap-2 overflow-hidden rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
+                            <div className="min-w-0 truncate text-base font-semibold text-[#1f2a1d]">{selectedCurrentSessionEvent.name}</div>
+                            <div className="min-w-0">
+                              <div className="truncate">{selectedCurrentSessionEvent.course ?? "Course TBD"}</div>
+                              {selectedCurrentSessionEvent.location ? <div className="truncate">{selectedCurrentSessionEvent.location}</div> : null}
+                            </div>
+                            <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedCurrentSessionEvent.dateLabel ?? "Date TBD"}</div>
+                          </div>
+                        ) : null}
                       <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <h3 className="m-0 font-[Georgia] text-xl">Player Pool And Odds</h3>
                             <div className="mt-1 text-sm text-[#617061]">
-                              Import the ESPN field, then paste or edit odds next to each golfer/team. These odds control the draft list order.
+                              The ESPN field imports automatically. Use this only to re-import or repair the field if something looks wrong.
                             </div>
                           </div>
                           <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{allPlayers.length} draftable</span>
                         </div>
+                        <div className="grid gap-2 rounded-2xl bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061] md:grid-cols-2">
+                          <div><span className="font-semibold text-[#1f2a1d]">Field refreshed:</span> {formatRefreshTime(currentSession.field_refreshed_at)}</div>
+                          <div><span className="font-semibold text-[#1f2a1d]">Odds refreshed:</span> {formatRefreshTime(currentSession.odds_refreshed_at)}</div>
+                          {currentSession.odds_source ? <div className="min-w-0 md:col-span-2"><span className="font-semibold text-[#1f2a1d]">Odds source:</span> <a className="break-words text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">{currentSession.odds_source}</a></div> : null}
+                          <div className="md:col-span-2"><span className="font-semibold text-[#1f2a1d]">Field status:</span> {picks.length || currentSession.field_locked_at ? `Locked${currentSession.field_locked_at ? ` ${formatRefreshTime(currentSession.field_locked_at)}` : " after drafting started"}` : "Refreshable until the first pick"}</div>
+                        </div>
                         <div className="flex flex-wrap gap-3">
-                          <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={importFieldFromEspn}>Import ESPN Field</button>
-                          <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={savePlayerPool}>Save Player Pool & Odds</button>
+                          <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromEspn}>Refresh Field & Odds</button>
+                          <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white disabled:opacity-50" disabled={!!picks.length} onClick={savePlayerPool}>Save Manual Edits</button>
                         </div>
                         <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
                         <div className="text-sm text-[#617061]">
@@ -2153,15 +2553,20 @@ export default function Page() {
                             {oddsSource || Object.keys(playerPoolOdds).length ? <div className="text-xs text-[#617061]">Ordered by win odds, lowest odds first. Odds can come from CBS Sports or your imported list.</div> : null}
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
                           <div className="grid max-h-[520px] content-start gap-2 overflow-y-auto overflow-x-hidden rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
-                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => (
-                              <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
-                                  <div className="min-w-0">
-                                    <div className="whitespace-normal break-words font-medium leading-tight">{player}</div>
-                                      <div className="text-[11px] text-[#617061]">{playerOddsLabel(player) ? `Odds ${playerOddsLabel(player)}` : "Odds unavailable"}</div>
-                                  </div>
-                                  <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
-                              </div>
-                            ))}
+                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => {
+                              const oddsLabel = playerOddsLabel(player);
+                              return (
+                                <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
+                                    <div className="min-w-0">
+                                      <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                        <div className="whitespace-normal break-words font-medium leading-tight">{player}</div>
+                                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${oddsLabel ? "bg-[#f6d77a] text-[#1f2a1d]" : "bg-[#f2eadf] text-[#617061]"}`}>{oddsLabel ?? "No odds"}</span>
+                                      </div>
+                                    </div>
+                                    <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
 
@@ -2256,8 +2661,20 @@ export default function Page() {
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                             <div className="grid gap-2">
                                 <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
+                                {currentSessionDisplayEvent?.course || currentSessionDisplayEvent?.location ? (
+                                  <div className="text-sm font-medium text-white/88">
+                                    {currentSessionDisplayEvent.course ? (
+                                      <a className="underline decoration-white/35 underline-offset-4 hover:text-[#f6d77a]" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">
+                                        {currentSessionDisplayEvent.course}
+                                      </a>
+                                    ) : null}
+                                    {currentSessionDisplayEvent.course && currentSessionDisplayEvent.location ? <span> - </span> : null}
+                                    {currentSessionDisplayEvent.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
+                                  </div>
+                                ) : null}
                                 <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
                                   <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
+                                  {currentSessionDisplayEvent?.dateLabel ? <span className="rounded-full bg-white/12 px-3 py-1">{currentSessionDisplayEvent.dateLabel}</span> : null}
                                 </div>
                               </div>
                                   <div className="grid w-full max-w-[260px] gap-2 justify-items-start">

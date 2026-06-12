@@ -33,7 +33,29 @@ type EspnCompetitor = {
 type EventOption = {
   id: string;
   name: string;
+  dateLabel?: string;
+  location?: string;
+  course?: string;
 };
+
+const TOUR_ENDPOINTS: Record<string, { label: string; slug: string; scheduleSlug: string }> = {
+  pga: { label: "PGA TOUR", slug: "pga", scheduleSlug: "pga" },
+  lpga: { label: "LPGA Tour", slug: "lpga", scheduleSlug: "lpga" },
+  ntw: { label: "Korn Ferry Tour", slug: "ntw", scheduleSlug: "ntw" },
+  eur: { label: "DP World Tour", slug: "eur", scheduleSlug: "eur" },
+  champions: { label: "PGA TOUR Champions", slug: "champions-tour", scheduleSlug: "champions-tour" },
+  liv: { label: "LIV Golf", slug: "liv", scheduleSlug: "liv" },
+};
+
+function resolveTour(rawTour: string | null) {
+  return TOUR_ENDPOINTS[String(rawTour ?? "pga").toLowerCase()] ?? TOUR_ENDPOINTS.pga;
+}
+
+function tourSearchOrder(rawTour: string | null) {
+  const selected = TOUR_ENDPOINTS[String(rawTour ?? "").toLowerCase()];
+  const tours = Object.values(TOUR_ENDPOINTS);
+  return selected ? [selected, ...tours.filter((tour) => tour.slug !== selected.slug)] : tours;
+}
 
 function decodeHtmlText(text: string) {
   return text
@@ -44,6 +66,39 @@ function decodeHtmlText(text: string) {
     .replace(/&apos;/g, "'")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function cleanHtmlText(html: string) {
+  return decodeHtmlText(html.replace(/<[^>]+>/g, " "));
+}
+
+function formatEventDateRange(start: string | null | undefined, end: string | null | undefined) {
+  if (!start) return undefined;
+  const startDate = new Date(start);
+  if (Number.isNaN(startDate.getTime())) return undefined;
+
+  const endDate = end ? new Date(end) : null;
+  const month = new Intl.DateTimeFormat("en-US", { month: "short", timeZone: "UTC" });
+  const day = new Intl.DateTimeFormat("en-US", { day: "numeric", timeZone: "UTC" });
+  const startMonth = month.format(startDate);
+  const startDay = day.format(startDate);
+
+  if (!endDate || Number.isNaN(endDate.getTime())) return `${startMonth} ${startDay}`;
+
+  const endMonth = month.format(endDate);
+  const endDay = day.format(endDate);
+  return startMonth === endMonth ? `${startMonth} ${startDay} - ${endDay}` : `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
+}
+
+function splitCourseAndLocation(rawLocation: string | undefined) {
+  if (!rawLocation) return {};
+  const [course, ...rest] = rawLocation.split(/\s+-\s+/);
+  const cleanedCourse = course?.trim();
+  const location = rest.join(" - ").trim();
+  return {
+    course: cleanedCourse || undefined,
+    location: location || rawLocation,
+  };
 }
 
 function normalizeName(name: string) {
@@ -92,19 +147,24 @@ function extractEventsFromScoreboard(scoreboardJson: any) {
     .map((event: any) => ({
       id: String(event?.id ?? ""),
       name: String(event?.name ?? event?.shortName ?? "").trim(),
+      dateLabel: formatEventDateRange(event?.date, event?.endDate),
     }))
     .filter((event: EventOption) => event.id && event.name);
 }
 
 function extractEventsFromScheduleHtml(html: string) {
-  const matches = [...html.matchAll(/leaderboard\?tournamentId=(\d+)[\s\S]{0,400}?eventAndLocation__tournamentLink">([^<]+)</g)];
+  const matches = [...html.matchAll(/<tr[^>]*>([\s\S]*?leaderboard\?tournamentId=(\d+)[\s\S]*?)<\/tr>/g)];
   const deduped = new Map<string, EventOption>();
 
   for (const match of matches) {
-    const id = match[1]?.trim();
-    const name = match[2]?.trim();
+    const rowHtml = match[1] ?? "";
+    const id = match[2]?.trim();
+    const name = cleanHtmlText(rowHtml.match(/eventAndLocation__tournamentLink[^>]*>([\s\S]*?)<\/p>/)?.[1] ?? "");
+    const dateLabel = cleanHtmlText(rowHtml.match(/dateAndTickets__col[\s\S]*?<div[^>]*>\s*<div[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "") || undefined;
+    const rawLocation = cleanHtmlText(rowHtml.match(/eventAndLocation__tournamentLocation[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "") || undefined;
+    const { course, location } = splitCourseAndLocation(rawLocation);
     if (!id || !name || deduped.has(id)) continue;
-    deduped.set(id, { id, name });
+    deduped.set(id, { id, name, dateLabel, course, location });
   }
 
   return Array.from(deduped.values());
@@ -115,7 +175,14 @@ function mergeEvents(...collections: EventOption[][]) {
 
   for (const collection of collections) {
     for (const event of collection) {
-      if (!merged.has(event.id)) merged.set(event.id, event);
+      const existing = merged.get(event.id);
+      merged.set(event.id, existing ? {
+        ...existing,
+        name: existing.name || event.name,
+        dateLabel: existing.dateLabel ?? event.dateLabel,
+        course: existing.course ?? event.course,
+        location: existing.location ?? event.location,
+      } : event);
     }
   }
 
@@ -296,10 +363,12 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
 function parseOddsFromArticle(articleHtml: string) {
   const normalized = articleHtml
     .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
     .replace(/<\/p>/gi, "\n")
     .replace(/&nbsp;/gi, " ")
     .replace(/&#x27;/gi, "'")
-    .replace(/&amp;/gi, "&");
+    .replace(/&amp;/gi, "&")
+    .replace(/<[^>]+>/g, " ");
 
   const odds = new Map<string, number>();
   const regex = /([A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){1,3})\s+\+(\d{3,6})/g;
@@ -322,6 +391,15 @@ function parseOddsFromArticle(articleHtml: string) {
       const key = normalizeName(playerName);
       if (playerName && !odds.has(key)) odds.set(key, value);
     }
+  }
+
+  const fractionalRegex = /([A-Z][A-Za-z.'â€™\-]+(?:\s+[A-Z][A-Za-z.'â€™\-]+){1,3})\s+(\d{1,3})\/1/g;
+  for (const match of normalized.matchAll(fractionalRegex)) {
+    const playerName = match[1].replace(/\s+/g, " ").trim();
+    const value = Number(match[2]) * 100;
+    if (!playerName || !Number.isFinite(value)) continue;
+    const key = normalizeName(playerName);
+    if (!odds.has(key)) odds.set(key, value);
   }
 
   return odds;
@@ -381,15 +459,66 @@ async function fetchLeaderboardHtmlForEvent(eventId: string) {
   return null;
 }
 
-async function findCbsOddsArticle(eventName: string) {
+async function findOddsArticle(eventName: string) {
   const year = new Date().getFullYear();
-  const query = encodeURIComponent(`site:cbssports.com/golf/news ${year} ${eventName} odds picks field favorites`);
+  const eventSlug = eventName
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  const directCandidates = [
+    `https://www.cbssports.com/golf/news/${year}-${eventSlug}-odds-picks-predictions-field-favorites-contenders/`,
+    `https://www.cbssports.com/golf/news/${year}-${eventSlug}-odds-field-picks-predictions-favorites-contenders/`,
+  ];
+
+  for (const url of directCandidates) {
+    try {
+      const html = await fetchText(url);
+      if (parseOddsFromArticle(html).size) return url;
+    } catch {
+      // Fall back to search discovery.
+    }
+  }
+
+  const query = encodeURIComponent(`${year} "${eventName}" golf betting odds field favorites`);
   const searchHtml = await fetchText(`https://html.duckduckgo.com/html/?q=${query}`);
+  const sourceDomains = [
+    "cbssports.com/golf/news/",
+    "nypost.com/",
+    "golfmonthly.com/",
+    "rotowire.com/golf/",
+    "covers.com/sport/golf/",
+    "actionnetwork.com/golf/",
+    "golfdigest.com/",
+  ];
   const urls = [...searchHtml.matchAll(/uddg=([^&"]+)/g)]
     .map((match) => decodeURIComponent(match[1]))
-    .filter((url) => url.includes("cbssports.com/golf/news/"));
+    .filter((url) => sourceDomains.some((domain) => url.includes(domain)));
 
   return urls[0] ?? null;
+}
+
+async function fetchScoreboardForEvent(eventId: string | null, rawTour: string | null) {
+  for (const tour of tourSearchOrder(rawTour)) {
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+    const scoreboardJson = await fetchJson(scoreboardUrl);
+    const event = extractEventById(scoreboardJson, eventId);
+    const competitors = extractCompetitors(scoreboardJson, eventId);
+    if (!eventId || event || competitors.length) {
+      return { tour, scoreboardJson, scoreboardUrl, event, competitors };
+    }
+  }
+
+  const tour = resolveTour(rawTour);
+  const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+  const scoreboardJson = await fetchJson(scoreboardUrl);
+  return {
+    tour,
+    scoreboardJson,
+    scoreboardUrl,
+    event: extractEventById(scoreboardJson, eventId),
+    competitors: extractCompetitors(scoreboardJson, eventId),
+  };
 }
 
 export async function GET(req: NextRequest) {
@@ -398,14 +527,15 @@ export async function GET(req: NextRequest) {
   const eventNameParam = req.nextUrl.searchParams.get("eventName");
 
   try {
-    const scoreboardUrl = "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard";
-    const scoreboardJson = await fetchJson(scoreboardUrl);
-
     if (action === "events") {
-      const scheduleHtml = await fetchText("https://www.espn.com/golf/schedule");
+      const tour = resolveTour(req.nextUrl.searchParams.get("tour"));
+      const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+      const scoreboardJson = await fetchJson(scoreboardUrl);
+      const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}`);
       const events = mergeEvents(extractEventsFromScoreboard(scoreboardJson), extractEventsFromScheduleHtml(scheduleHtml));
       return NextResponse.json({
         ok: true,
+        tour: tour.label,
         events,
       });
     }
@@ -418,11 +548,11 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      const articleUrl = await findCbsOddsArticle(eventNameParam.trim());
+      const articleUrl = await findOddsArticle(eventNameParam.trim());
       if (!articleUrl) {
         return NextResponse.json({
           ok: false,
-          error: "Could not find a CBS Sports odds article for that event.",
+          error: "Could not find a betting odds article for that event.",
         });
       }
 
@@ -438,8 +568,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const event = extractEventById(scoreboardJson, eventId);
-    const competitors = extractCompetitors(scoreboardJson, eventId);
+    const { scoreboardUrl, event, competitors } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"));
     const eventName = event?.name ?? undefined;
 
     const scoreboardPlayers = extractPlayerField(competitors);
