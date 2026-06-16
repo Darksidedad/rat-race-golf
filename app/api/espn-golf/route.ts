@@ -459,6 +459,51 @@ async function fetchLeaderboardHtmlForEvent(eventId: string) {
   return null;
 }
 
+function extractPlayersFromUsgaJson(payload: any) {
+  const cards = payload?.data?.flatMap((entry: any) => entry?.resultset?.cards ?? []) ?? [];
+  const seen = new Set<string>();
+  const players: string[] = [];
+
+  for (const card of cards) {
+    const fullName = String(card?.fullName ?? [card?.firstName, card?.lastName].filter(Boolean).join(" ")).replace(/\s+/g, " ").trim();
+    const key = normalizeName(fullName);
+    if (!fullName || seen.has(key)) continue;
+    seen.add(key);
+    players.push(fullName);
+  }
+
+  return players.sort((a, b) => a.localeCompare(b));
+}
+
+async function fetchUsgaFieldForEvent(eventName: string | undefined) {
+  if (!eventName || !/\bu\.?s\.?\s+open\b/i.test(eventName)) return null;
+
+  const year = new Date().getFullYear();
+  const urls = [
+    `https://www.usopen.com/content/api/players.resource=@@content@@usopen@@${year}@@players@@_jcr_content@@root@@all_player.year=${year}.json`,
+    "https://www.usopen.com/content/api/players.view=players.championship=uso.json",
+  ];
+
+  for (const url of urls) {
+    try {
+      const payload = await fetchJson(url);
+      const players = extractPlayersFromUsgaJson(payload);
+      if (players.length) return { players, source: url };
+    } catch {
+      // USGA exposes a couple of API shapes depending on championship state.
+    }
+  }
+
+  return null;
+}
+
+async function fetchScheduledEvent(eventId: string | null, tour: { scheduleSlug: string }) {
+  if (!eventId) return null;
+
+  const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}`);
+  return extractEventsFromScheduleHtml(scheduleHtml).find((event) => event.id === eventId) ?? null;
+}
+
 async function findOddsArticle(eventName: string) {
   const year = new Date().getFullYear();
   const eventSlug = eventName
@@ -568,8 +613,15 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const { scoreboardUrl, event, competitors } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"));
-    const eventName = event?.name ?? undefined;
+    const { scoreboardUrl, event, competitors, tour } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"));
+    let eventName = event?.name ?? undefined;
+    if (action === "field" && eventId && !eventName) {
+      try {
+        eventName = (await fetchScheduledEvent(eventId, tour))?.name ?? undefined;
+      } catch {
+        // Schedule lookup is best effort; the ESPN live feed may still be enough.
+      }
+    }
 
     const scoreboardPlayers = extractPlayerField(competitors);
 
@@ -583,6 +635,16 @@ export async function GET(req: NextRequest) {
           eventName,
           players,
           source: page?.url,
+        });
+      }
+
+      const usgaField = await fetchUsgaFieldForEvent(eventName);
+      if (usgaField?.players.length) {
+        return NextResponse.json({
+          ok: true,
+          eventName,
+          players: usgaField.players,
+          source: usgaField.source,
         });
       }
     }
