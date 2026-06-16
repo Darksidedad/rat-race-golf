@@ -429,6 +429,46 @@ $$;
 
 grant execute on function public.ensure_default_league_membership(text) to authenticated;
 
+create or replace function public.claim_draft_team_for_member(target_session_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  claimed_name text;
+  claimed_count integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select league_memberships.claimed_team_name
+  into claimed_name
+  from public.draft_sessions
+  join public.league_memberships on league_memberships.league_id = draft_sessions.league_id
+  where draft_sessions.id = target_session_id
+    and league_memberships.user_id = auth.uid()
+  limit 1;
+
+  if nullif(trim(coalesce(claimed_name, '')), '') is null then
+    return 0;
+  end if;
+
+  update public.draft_teams
+  set owner_user_id = auth.uid()
+  where session_id = target_session_id
+    and active = true
+    and owner_user_id is null
+    and lower(regexp_replace(name, '[^a-z0-9]+', '', 'gi')) = lower(regexp_replace(claimed_name, '[^a-z0-9]+', '', 'gi'));
+
+  get diagnostics claimed_count = row_count;
+  return claimed_count;
+end;
+$$;
+
+grant execute on function public.claim_draft_team_for_member(uuid) to authenticated;
+
 create or replace function public.assign_first_commissioner()
 returns trigger
 language plpgsql

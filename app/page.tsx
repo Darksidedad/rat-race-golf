@@ -455,6 +455,7 @@ export default function Page() {
   const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
   const [oddsSource, setOddsSource] = useState("");
   const [autoFieldImportAttempts, setAutoFieldImportAttempts] = useState<Record<string, boolean>>({});
+  const [autoTeamClaimAttempts, setAutoTeamClaimAttempts] = useState<Record<string, boolean>>({});
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
@@ -699,6 +700,10 @@ export default function Page() {
   useEffect(() => {
     autoImportMissingPlayerPool();
   }, [canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.player_input]);
+
+  useEffect(() => {
+    autoClaimMatchingDraftTeam();
+  }, [activeTeamName, currentSession?.id, teams, user?.id]);
 
   useEffect(() => {
     autoRefreshFieldBeforeDraft();
@@ -1804,6 +1809,32 @@ export default function Page() {
       setStatusMessage(error instanceof Error && error.message ? `Auto import failed: ${error.message}` : "Auto import failed. Use Setup to import the field manually.");
     }
     setBusy("");
+  }
+
+  async function autoClaimMatchingDraftTeam() {
+    if (!user || !currentSession?.id || !activeTeamName?.trim()) return;
+    const attemptKey = `${currentSession.id}:${user.id}`;
+    if (autoTeamClaimAttempts[attemptKey]) return;
+
+    const normalizedClaim = normalizeName(activeTeamName);
+    const matchingTeam = teams.find((team) => team.active && normalizeName(team.name) === normalizedClaim);
+    if (!matchingTeam || matchingTeam.owner_user_id === user.id || matchingTeam.owner_user_id) return;
+
+    setAutoTeamClaimAttempts((current) => ({ ...current, [attemptKey]: true }));
+
+    const { data, error } = await supabase.rpc("claim_draft_team_for_member", {
+      target_session_id: currentSession.id,
+    });
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    if ((data ?? 0) > 0) {
+      setStatusMessage(`Linked your account to ${matchingTeam.name}.`);
+      await loadSession(currentSession.id, false);
+    }
   }
 
   async function autoRefreshFieldBeforeDraft() {
