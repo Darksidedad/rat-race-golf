@@ -475,8 +475,9 @@ function extractPlayersFromUsgaJson(payload: any) {
   return players.sort((a, b) => a.localeCompare(b));
 }
 
-async function fetchUsgaFieldForEvent(eventName: string | undefined) {
-  if (!eventName || !/\bu\.?s\.?\s+open\b/i.test(eventName)) return null;
+async function fetchUsgaFieldForEvent(eventName: string | undefined, eventId: string | null) {
+  const isUsOpen = Boolean(eventName && /\bu\.?s\.?\s+open\b/i.test(eventName)) || eventId === "401811952";
+  if (!isUsOpen) return null;
 
   const year = new Date().getFullYear();
   const urls = [
@@ -638,7 +639,7 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      const usgaField = await fetchUsgaFieldForEvent(eventName);
+      const usgaField = await fetchUsgaFieldForEvent(eventName, eventId);
       if (usgaField?.players.length) {
         return NextResponse.json({
           ok: true,
