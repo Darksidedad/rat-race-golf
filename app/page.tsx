@@ -97,6 +97,11 @@ function formatRefreshTime(value: string | null | undefined) {
   return new Date(value).toLocaleString();
 }
 
+function isMissingColumnError(error: { message?: string; code?: string } | null | undefined, columnName: string) {
+  const message = String(error?.message ?? "").toLowerCase();
+  return error?.code === "PGRST204" || (message.includes(columnName.toLowerCase()) && (message.includes("schema cache") || message.includes("column")));
+}
+
 function formatEventDropdownOption(event: EventOption) {
   return event.dateLabel ? `${event.name} (${event.dateLabel})` : event.name;
 }
@@ -1405,7 +1410,12 @@ export default function Page() {
 
   async function updateSession(patch: Partial<DraftSession>, message: string) {
     if (!currentSession) return false;
-    const { error } = await supabase.from("draft_sessions").update(patch).eq("id", currentSession.id);
+    let { error } = await supabase.from("draft_sessions").update(patch).eq("id", currentSession.id);
+    if (error && "event_tour" in patch && isMissingColumnError(error, "event_tour")) {
+      const { event_tour: _eventTour, ...fallbackPatch } = patch;
+      const fallbackResult = await supabase.from("draft_sessions").update(fallbackPatch).eq("id", currentSession.id);
+      error = fallbackResult.error;
+    }
     if (error) {
       console.error(error);
       setStatusMessage("Could not save the tournament changes.");
@@ -1655,7 +1665,12 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
     }
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, event_tour: newDraftTour, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
+    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
+    let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
+    if (sessionInsert.error && isMissingColumnError(sessionInsert.error, "event_tour")) {
+      const { event_tour: _eventTour, ...fallbackPayload } = sessionPayload;
+      sessionInsert = await supabase.from("draft_sessions").insert([fallbackPayload]).select("*").single();
+    }
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
