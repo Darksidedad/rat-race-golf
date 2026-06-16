@@ -321,7 +321,7 @@ $$;
 
 create or replace function public.create_league_for_site_admin(
   target_name text,
-  target_slug text,
+  target_slug text default null,
   commissioner_claimed_team_name text default null
 )
 returns uuid
@@ -332,19 +332,33 @@ as $$
 declare
   created_league_id uuid;
   normalized_name text;
+  base_slug text;
   normalized_slug text;
+  suffix integer := 1;
 begin
   if not public.is_site_admin() then
     raise exception 'Only a site admin can create leagues';
   end if;
 
   normalized_name := nullif(trim(coalesce(target_name, '')), '');
-  normalized_slug := lower(regexp_replace(trim(coalesce(target_slug, '')), '[^a-z0-9]+', '-', 'g'));
-  normalized_slug := regexp_replace(normalized_slug, '^-+|-+$', '', 'g');
+  base_slug := lower(regexp_replace(trim(coalesce(nullif(target_slug, ''), normalized_name, '')), '[^a-z0-9]+', '-', 'g'));
+  base_slug := regexp_replace(base_slug, '^-+|-+$', '', 'g');
 
-  if normalized_name is null or normalized_slug = '' then
-    raise exception 'League name and slug are required';
+  if normalized_name is null then
+    raise exception 'League name is required';
   end if;
+
+  if base_slug = '' then
+    base_slug := 'league';
+  end if;
+
+  base_slug := left(base_slug, 56);
+  normalized_slug := base_slug;
+
+  while exists (select 1 from public.leagues where slug = normalized_slug) loop
+    suffix := suffix + 1;
+    normalized_slug := left(base_slug, 56 - length('-' || suffix::text)) || '-' || suffix::text;
+  end loop;
 
   insert into public.leagues (name, slug, created_by)
   values (normalized_name, normalized_slug, auth.uid())

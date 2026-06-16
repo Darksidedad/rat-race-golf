@@ -266,10 +266,6 @@ function roleLabel(role: Profile["role"]) {
   return "Member";
 }
 
-function slugifyLeagueName(name: string) {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
-}
-
 function isValidPlayerName(player: string) {
   const key = normalizeName(player);
   const parts = player.split(/\s*\/\s*/).map((part) => part.trim()).filter(Boolean);
@@ -429,7 +425,6 @@ export default function Page() {
   const [newDraftModalOpen, setNewDraftModalOpen] = useState(false);
   const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
   const [newLeagueName, setNewLeagueName] = useState("");
-  const [newLeagueSlug, setNewLeagueSlug] = useState("");
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
   const [playerPoolDraft, setPlayerPoolDraft] = useState("");
   const [manualLeaderboardDraft, setManualLeaderboardDraft] = useState("");
@@ -975,8 +970,7 @@ export default function Page() {
     }
 
     const leagueName = newLeagueName.trim();
-    const leagueSlug = (newLeagueSlug.trim() || slugifyLeagueName(leagueName));
-    if (!leagueName || !leagueSlug) {
+    if (!leagueName) {
       setStatusMessage("Enter a league name before creating it.");
       return;
     }
@@ -984,7 +978,6 @@ export default function Page() {
     setBusy("Creating league...");
     const leagueResult = await supabase.rpc("create_league_for_site_admin", {
       target_name: leagueName,
-      target_slug: leagueSlug,
       commissioner_claimed_team_name: activeTeamName,
     });
 
@@ -996,7 +989,6 @@ export default function Page() {
     }
 
     setNewLeagueName("");
-    setNewLeagueSlug("");
     setBusy("");
     setStatusMessage(`Created ${leagueName}.`);
     setCurrentLeagueId(leagueResult.data as string);
@@ -2181,6 +2173,7 @@ export default function Page() {
                           {selectedNewDraftEvent.location ? <div className="truncate">{selectedNewDraftEvent.location}</div> : null}
                         </div>
                         <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedNewDraftEvent.dateLabel ?? "Date TBD"}</div>
+                        <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-[#617061]">Creating the room will import the latest ESPN field and betting odds before the first pick.</div>
                       </div>
                     ) : null}
                   </div>
@@ -2227,8 +2220,8 @@ export default function Page() {
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
                 <div className="text-sm text-[#617061]">{busy || statusMessage}</div>
                 <div className="flex flex-wrap gap-2">
-                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={resetNewDraftForm}>Reset</button>
-                  <button className="rounded-full bg-[#1a5c3a] px-5 py-2 font-semibold text-white disabled:opacity-50" disabled={busy === "Creating session..."} onClick={createSession}>
+                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" disabled={busy === "Creating session..."} onClick={resetNewDraftForm}>Reset</button>
+                  <button className="rounded-full bg-[#1a5c3a] px-5 py-2 font-semibold text-white disabled:opacity-50" disabled={busy === "Creating session..." || !newSessionEventId || !newDraftTeams.some((team) => team.selected)} onClick={createSession}>
                     {busy === "Creating session..." ? busy : "Create Draft Room"}
                   </button>
                 </div>
@@ -2370,9 +2363,9 @@ export default function Page() {
                           <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromEspn}>Refresh Field & Odds</button>
                           <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white disabled:opacity-50" disabled={!!picks.length} onClick={savePlayerPool}>Save Manual Edits</button>
                         </div>
-                        <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm" value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
+                        <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm disabled:bg-[#f4efe6] disabled:text-[#617061]" disabled={!!picks.length} value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
                         <div className="text-sm text-[#617061]">
-                          For team events, keep both players on the same line with a slash so they draft together.
+                          {picks.length ? "The field is locked because drafting has started. Undo picks before changing the player pool." : "For team events, keep both players on the same line with a slash so they draft together."}
                         </div>
                       </div>
                         <div className="my-1 h-px bg-black/10" />
@@ -2415,11 +2408,11 @@ export default function Page() {
                               <h4 className="m-0 font-[Georgia] text-lg">Site Admin</h4>
                               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{leagues.length} leagues</span>
                             </div>
-                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px_auto]">
-                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueName} onChange={(event) => { setNewLeagueName(event.target.value); if (!newLeagueSlug) setNewLeagueSlug(slugifyLeagueName(event.target.value)); }} placeholder="New league name" />
-                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueSlug} onChange={(event) => setNewLeagueSlug(slugifyLeagueName(event.target.value))} placeholder="league-slug" />
+                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueName} onChange={(event) => setNewLeagueName(event.target.value)} placeholder="League name, for example Rat Race Golf - 2027" />
                               <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={createLeague}>Create League</button>
                             </div>
+                            <div className="text-sm text-[#617061]">League names can repeat. The app creates a unique league URL behind the scenes, like fantasy football and baseball platforms do.</div>
                             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                               <select className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueMemberId} onChange={(event) => setNewLeagueMemberId(event.target.value)}>
                                 <option value="">{availableSiteProfiles.length ? "Add existing account to this league" : "All accounts are in this league"}</option>
@@ -2553,7 +2546,7 @@ export default function Page() {
                             {oddsSource || Object.keys(playerPoolOdds).length ? <div className="text-xs text-[#617061]">Ordered by win odds, lowest odds first. Odds can come from CBS Sports or your imported list.</div> : null}
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
                           <div className="grid max-h-[520px] content-start gap-2 overflow-y-auto overflow-x-hidden rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
-                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No available golfers match your search.</div> : availablePlayers.map((player) => {
+                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
                               const oddsLabel = playerOddsLabel(player);
                               return (
                                 <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
