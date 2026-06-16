@@ -1655,7 +1655,7 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
     }
-    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
+    const sessionInsert = await supabase.from("draft_sessions").insert([{ league_id: currentLeagueId, event_tour: newDraftTour, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id }]).select("*").single();
     if (sessionInsert.error || !sessionInsert.data) {
       console.error(sessionInsert.error);
       setBusy("");
@@ -1767,7 +1767,8 @@ export default function Page() {
         await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN after cleaning duplicates, team rows, and invalid rows.`);
       } catch (error) {
         console.error(error);
-        setStatusMessage(error instanceof Error && error.message ? error.message : "Could not import the player field from ESPN.");
+        const tourLabel = TOUR_OPTIONS.find((tour) => tour.id === currentSession.event_tour)?.label ?? "the selected tour";
+        setStatusMessage(error instanceof Error && error.message ? `${tourLabel}: ${error.message}` : `Could not import the player field from ${tourLabel}.`);
       }
       setBusy("");
     }
@@ -2329,7 +2330,7 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="my-1 h-px bg-black/10" />
-                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
+                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null, event_tour: newDraftTour }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
                           <option value="">No event selected</option>
                           {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
                         </select>
