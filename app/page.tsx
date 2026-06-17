@@ -84,7 +84,15 @@ const INVALID_PLAYER_TERMS = [
 ];
 
 function normalizeName(name: string) {
-  return name.toLowerCase().replace(/\./g, "").replace(/['\u2019]/g, "").replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+  return name
+    .toLowerCase()
+    .replace(/\s*[-–—]\s*(?:amateur|a)\b/g, "")
+    .replace(/\s*\((?:amateur|a)\)\s*/g, " ")
+    .replace(/\./g, "")
+    .replace(/['\u2019]/g, "")
+    .replace(/\s*\/\s*/g, "/")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatOdds(odds: number | null | undefined) {
@@ -225,9 +233,10 @@ function holesCompletedForDisplay(thru: string | null | undefined, meta: string 
   return holesCompletedFromThru(thru);
 }
 
-function resultStatusLabel(position: number | null, thru: string | null | undefined, meta: string | null | undefined) {
+function resultStatusLabel(position: number | null, total: string | null | undefined, thru: string | null | undefined, meta: string | null | undefined) {
   const playoff = playoffLabel(meta);
   if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : thru ? ` - ${thru}` : ""}`;
+  if (!total && !thru && !playoff) return "No leaderboard match";
   return playoff ?? thru ?? "CUT / no finish";
 }
 
@@ -2851,7 +2860,7 @@ export default function Page() {
                                       {player.total ? <span className={`shrink-0 text-sm font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
                                     </div>
                                     <div className="text-[11px] text-[#617061]">
-                                      {resultStatusLabel(player.position, player.thru, player.meta)}
+                                      {resultStatusLabel(player.position, player.total, player.thru, player.meta)}
                                     </div>
                                   </div>
                                   <div className="text-right">
