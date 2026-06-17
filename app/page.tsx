@@ -646,21 +646,6 @@ export default function Page() {
   const totalPicks = assignedTeams.length * ROUNDS;
   const draftComplete = totalPicks > 0 && picks.length >= totalPicks;
   const currentRound = assignedTeams.length ? Math.floor(picks.length / assignedTeams.length) + 1 : 0;
-  const draftBoardRounds = useMemo(() => {
-    return Array.from({ length: ROUNDS }, (_, roundIndex) => {
-      const roundNumber = roundIndex + 1;
-      const order = roundNumber % 2 === 1 ? assignedTeams : [...assignedTeams].reverse();
-      return {
-        roundNumber,
-        cells: order.map((team, pickIndex) => {
-          const pick = picks.find((entry) => entry.team_id === team.id && entry.round_number === roundNumber) ?? null;
-          const overallPick = roundIndex * assignedTeams.length + pickIndex + 1;
-          const isOnClock = !draftComplete && validDraftOrder && currentTeamOnClock?.id === team.id && currentRound === roundNumber && picks.length === overallPick - 1;
-          return { team, pick, overallPick, isOnClock };
-        }),
-      };
-    });
-  }, [assignedTeams, currentRound, currentTeamOnClock, draftComplete, picks, validDraftOrder]);
   const draftPickTape = useMemo(() => {
     if (!assignedTeams.length) return [];
 
@@ -678,12 +663,21 @@ export default function Page() {
       };
     });
   }, [assignedTeams, draftComplete, picks, totalPicks]);
-  const visiblePickTape = useMemo(() => {
-    if (!draftPickTape.length) return [];
-    const anchor = draftComplete ? draftPickTape.length - 1 : Math.min(picks.length, draftPickTape.length - 1);
-    const start = Math.max(0, Math.min(anchor - 3, draftPickTape.length - 7));
-    return draftPickTape.slice(start, start + 7);
-  }, [draftComplete, draftPickTape, picks.length]);
+  const teamDraftRosters = useMemo(() => {
+    const claimedTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? "";
+    return assignedTeams
+      .map((team) => ({
+        team,
+        isMine: team.owner_user_id === user?.id || (!!claimedTeamName && normalizeName(team.name) === normalizeName(claimedTeamName)),
+        picks: picks
+          .filter((pick) => pick.team_id === team.id)
+          .sort((a, b) => a.round_number - b.round_number || a.pick_number - b.pick_number),
+      }))
+      .sort((a, b) => {
+        if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
+        return (a.team.draft_slot ?? 999) - (b.team.draft_slot ?? 999);
+      });
+  }, [assignedTeams, currentMembership?.claimed_team_name, picks, profile?.team_name, user?.id]);
   const leaderboard = useMemo(() => {
     const positions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
@@ -2728,11 +2722,12 @@ export default function Page() {
                           <div className="grid gap-2 rounded-3xl border border-black/10 bg-white/80 p-3">
                             <div className="flex items-center justify-between gap-3 px-1">
                               <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#617061]">Draft Flow</div>
-                              <div className="text-xs text-[#617061]">Current pick stays centered</div>
+                              <div className="text-xs text-[#617061]">Scroll to see every pick in order</div>
                             </div>
-                            <div className="grid grid-cols-1 gap-2 md:grid-cols-7">
-                              {!visiblePickTape.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061] md:col-span-7">Set the draft order to see the pick flow.</div> : visiblePickTape.map((entry) => (
-                                <div key={entry.pickNumber} className={`grid min-h-[104px] content-start gap-1 rounded-2xl border p-3 text-sm ${
+                            <div className="overflow-x-auto overflow-y-hidden pb-2">
+                              <div className="grid min-w-max auto-cols-[minmax(150px,180px)] grid-flow-col gap-2">
+                              {!draftPickTape.length ? <div className="w-[260px] rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : draftPickTape.map((entry) => (
+                                <div key={entry.pickNumber} className={`grid min-h-[112px] content-start gap-1 rounded-2xl border p-3 text-sm ${
                                   entry.state === "current"
                                     ? "scale-[1.02] border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)]"
                                     : entry.state === "complete"
@@ -2752,43 +2747,50 @@ export default function Page() {
                                   )}
                                 </div>
                               ))}
+                              </div>
                             </div>
                           </div>
-                            <div className="grid gap-4 overflow-x-hidden pr-0">
-                            {!assignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Set the draft order before using the board.</div> : draftBoardRounds.map((round) => (
-                                <div key={round.roundNumber} className="grid gap-2">
-                                  <div className="flex items-center gap-3">
-                                    <div className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-[#6a5940]">Round {round.roundNumber}</div>
-                                    <div className="text-sm text-[#617061]">{round.roundNumber % 2 === 1 ? "Snake moving left to right" : "Snake moving right to left"}</div>
-                                  </div>
-                                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-                                      {round.cells.map(({ team, pick, overallPick, isOnClock }) => (
-                                      <div key={`${round.roundNumber}-${team.id}`} className={`grid min-h-[118px] content-start gap-2 rounded-2xl border p-3 ${isOnClock ? "border-[#1a5c3a]/60 bg-[#e0eee4] shadow-[0_12px_26px_rgba(26,92,58,0.16)]" : "border-black/10 bg-white/85"}`}>
-                                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-                                            <div className="min-w-0">
-                                              <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">Pick {overallPick}</div>
-                                            <strong className="block text-sm leading-tight">{team.name}</strong>
-                                          </div>
-                                          {isOnClock ? <span className="rounded-full bg-[#1a5c3a] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-white">On Clock</span> : null}
-                                        </div>
-                                            {pick ? (
-                                              <div className="grid gap-2">
-                                              <div className="rounded-xl bg-[#f7f2e9] px-3 py-2 text-sm font-medium leading-tight">
-                                                <div className="whitespace-normal break-words">{pick.player_name}</div>
-                                                {playerOddsLabel(pick.player_name) ? <div className="mt-1 text-[11px] font-semibold text-[#617061]">Odds {playerOddsLabel(pick.player_name)}</div> : null}
-                                              </div>
-                                              {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
-                                            </div>
-                                        ) : (
-                                          <div className={`rounded-xl px-3 py-2 text-sm leading-tight ${isOnClock ? "bg-white text-[#1a5c3a] font-semibold" : "bg-[#f7f2e9] text-[#617061]"}`}>
-                                            {isOnClock ? "Drafting now" : "Waiting"}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))}
-                                </div>
+                            <div className="grid gap-3 overflow-x-hidden pr-0">
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <h4 className="m-0 font-[Georgia] text-lg">Team Rosters</h4>
+                                <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{picks.length} of {totalPicks} picks made</span>
                               </div>
-                            ))}
+                            {!assignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Set the draft order before using the board.</div> : (
+                              <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                                {teamDraftRosters.map(({ team, picks: teamPicks, isMine }) => (
+                                  <div key={team.id} className={`grid min-h-[190px] content-start gap-3 rounded-2xl border p-4 ${isMine ? "border-[#1a5c3a]/60 bg-[#e0eee4] shadow-[0_12px_26px_rgba(26,92,58,0.16)]" : "border-black/10 bg-white/85"}`}>
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="min-w-0">
+                                        <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">{team.draft_slot ? `Draft slot ${team.draft_slot}` : "No slot"}</div>
+                                        <strong className="block break-words text-lg leading-tight">{team.name}</strong>
+                                      </div>
+                                      <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                                        {isMine ? <span className="rounded-full bg-[#1a5c3a] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white">My Team</span> : null}
+                                        {!draftComplete && currentTeamOnClock?.id === team.id ? <span className="rounded-full bg-[#f6d77a] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#1f2a1d]">On Clock</span> : null}
+                                      </div>
+                                    </div>
+                                    <div className="grid gap-2">
+                                      {Array.from({ length: ROUNDS }, (_, index) => {
+                                        const roundNumber = index + 1;
+                                        const pick = teamPicks.find((entry) => entry.round_number === roundNumber) ?? null;
+                                        return (
+                                          <div key={`${team.id}-round-${roundNumber}`} className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-3 py-2 text-sm ${pick ? "bg-white/90" : "bg-[#f7f2e9] text-[#617061]"}`}>
+                                            <span className="rounded-full bg-[#f2eadf] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#6a5940]">R{roundNumber}</span>
+                                            <span className="min-w-0 break-words font-medium leading-tight">{pick?.player_name ?? "Waiting"}</span>
+                                            {pick ? (
+                                              <span className="flex shrink-0 items-center gap-2">
+                                                {playerOddsLabel(pick.player_name) ? <span className="text-[11px] font-semibold text-[#617061]">{playerOddsLabel(pick.player_name)}</span> : null}
+                                                {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-2 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         </div>
                     </div>
