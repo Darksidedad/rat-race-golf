@@ -336,8 +336,8 @@ declare
   normalized_slug text;
   suffix integer := 1;
 begin
-  if not public.is_site_admin() then
-    raise exception 'Only a site admin can create leagues';
+  if auth.uid() is null then
+    raise exception 'Authentication required';
   end if;
 
   normalized_name := nullif(trim(coalesce(target_name, '')), '');
@@ -377,6 +377,49 @@ begin
   return created_league_id;
 end;
 $$;
+
+grant execute on function public.create_league_for_site_admin(text, text, text) to authenticated;
+
+create or replace function public.join_league_by_slug(target_slug text, claimed_team_name text default null)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_league_id uuid;
+  next_claimed_team_name text;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select id
+  into target_league_id
+  from public.leagues
+  where slug = lower(trim(coalesce(target_slug, '')))
+  limit 1;
+
+  if target_league_id is null then
+    raise exception 'That league invite is not valid';
+  end if;
+
+  next_claimed_team_name := nullif(trim(coalesce(claimed_team_name, (select team_name from public.profiles where id = auth.uid()), '')), '');
+
+  insert into public.league_memberships (league_id, user_id, role, claimed_team_name)
+  values (target_league_id, auth.uid(), 'member', next_claimed_team_name)
+  on conflict (league_id, user_id) do update
+    set claimed_team_name = coalesce(public.league_memberships.claimed_team_name, excluded.claimed_team_name);
+
+  update public.profiles
+  set active_league_id = target_league_id
+  where id = auth.uid();
+
+  return target_league_id;
+end;
+$$;
+
+grant execute on function public.join_league_by_slug(text, text) to authenticated;
 
 create or replace function public.ensure_default_league_membership(claimed_team_name text default null)
 returns uuid

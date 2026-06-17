@@ -431,6 +431,7 @@ export default function Page() {
   const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
   const [newLeagueName, setNewLeagueName] = useState("");
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
+  const [pendingLeagueSlug, setPendingLeagueSlug] = useState("");
   const [playerPoolDraft, setPlayerPoolDraft] = useState("");
   const [manualLeaderboardDraft, setManualLeaderboardDraft] = useState("");
   const [playerFilter, setPlayerFilter] = useState("");
@@ -459,6 +460,12 @@ export default function Page() {
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
+  const currentLeagueInviteUrl = useMemo(() => {
+    if (typeof window === "undefined" || !currentLeague?.slug) return "";
+    const url = new URL(window.location.origin + window.location.pathname);
+    url.searchParams.set("join", currentLeague.slug);
+    return url.toString();
+  }, [currentLeague?.slug]);
   const currentMembership = useMemo(() => memberships.find((membership) => membership.league_id === currentLeagueId && membership.user_id === user?.id) ?? null, [currentLeagueId, memberships, user?.id]);
   const selectedNewDraftEvent = useMemo(() => events.find((event) => event.id === newSessionEventId) ?? null, [events, newSessionEventId]);
   const selectedCurrentSessionEvent = useMemo(() => events.find((event) => event.id === currentSession?.event_id) ?? null, [events, currentSession?.event_id]);
@@ -468,6 +475,16 @@ export default function Page() {
   const isCommissioner = effectiveRole === "commissioner";
   const isAssistantCommissioner = effectiveRole === "assistant_commissioner";
   const isLeagueAdmin = isSiteAdmin || isCommissioner || isAssistantCommissioner;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const inviteSlug = params.get("join")?.trim().toLowerCase() || window.localStorage.getItem("rrg_pending_league_slug") || "";
+    if (!inviteSlug) return;
+    window.localStorage.setItem("rrg_pending_league_slug", inviteSlug);
+    setPendingLeagueSlug(inviteSlug);
+    setStatusMessage("Sign in or create an account to join this league.");
+  }, []);
 
   useEffect(() => {
     initializeAuth();
@@ -508,12 +525,12 @@ export default function Page() {
       setTeams([]);
       setPicks([]);
       setSelectedSessionId("");
-      setStatusMessage("Sign in to access the league.");
+      setStatusMessage(pendingLeagueSlug ? "Sign in or create an account to join this league." : "Sign in to access the league.");
       return;
     }
 
     void loadProfile(user.id);
-  }, [authChecked, user]);
+  }, [authChecked, pendingLeagueSlug, user]);
 
 
   useEffect(() => {
@@ -760,7 +777,37 @@ export default function Page() {
       console.error(defaultLeagueResult.error);
     }
 
+    await joinPendingLeagueInvite(nextProfile);
     await loadLeagueContext(userId, nextProfile);
+  }
+
+  async function joinPendingLeagueInvite(nextProfile: Profile | null) {
+    const inviteSlug = pendingLeagueSlug || (typeof window !== "undefined" ? window.localStorage.getItem("rrg_pending_league_slug") ?? "" : "");
+    if (!inviteSlug) return;
+
+    const joinResult = await supabase.rpc("join_league_by_slug", {
+      target_slug: inviteSlug,
+      claimed_team_name: nextProfile?.team_name ?? null,
+    });
+
+    if (joinResult.error || !joinResult.data) {
+      console.error(joinResult.error);
+      if (typeof window !== "undefined") window.localStorage.removeItem("rrg_pending_league_slug");
+      setPendingLeagueSlug("");
+      setStatusMessage(joinResult.error?.message || "Could not join that league invite.");
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("rrg_pending_league_slug");
+      const url = new URL(window.location.href);
+      url.searchParams.delete("join");
+      window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+
+    setPendingLeagueSlug("");
+    setCurrentLeagueId(joinResult.data as string);
+    setStatusMessage("Joined the league.");
   }
 
   async function loadLeagueContext(userId: string, nextProfile: Profile | null) {
@@ -974,8 +1021,8 @@ export default function Page() {
   }
 
   async function createLeague() {
-    if (!user || !isSiteAdmin) {
-      setStatusMessage("Only a site admin can create leagues.");
+    if (!user) {
+      setStatusMessage("Sign in before creating a league.");
       return;
     }
 
@@ -1003,6 +1050,31 @@ export default function Page() {
     setStatusMessage(`Created ${leagueName}.`);
     setCurrentLeagueId(leagueResult.data as string);
     await loadProfile(user.id);
+  }
+
+  async function copyLeagueInviteLink() {
+    if (!currentLeagueInviteUrl) return setStatusMessage("Create or select a league before copying an invite link.");
+
+    try {
+      await navigator.clipboard.writeText(currentLeagueInviteUrl);
+      setStatusMessage("Copied the league invite link.");
+    } catch (error) {
+      console.error(error);
+      setStatusMessage("Could not copy the invite link.");
+    }
+  }
+
+  function openLeagueInviteEmail() {
+    if (!currentLeagueInviteUrl || !currentLeague) return setStatusMessage("Create or select a league before sending an invite.");
+    const subject = encodeURIComponent(`Join ${currentLeague.name} on Rat Race Golf`);
+    const body = encodeURIComponent(`Join ${currentLeague.name} on Rat Race Golf:\n\n${currentLeagueInviteUrl}`);
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  }
+
+  function openLeagueInviteSms() {
+    if (!currentLeagueInviteUrl || !currentLeague) return setStatusMessage("Create or select a league before sending an invite.");
+    const body = encodeURIComponent(`Join ${currentLeague.name} on Rat Race Golf: ${currentLeagueInviteUrl}`);
+    window.location.href = `sms:?&body=${body}`;
   }
 
   async function addExistingMemberToLeague() {
@@ -2130,7 +2202,7 @@ export default function Page() {
             <div>
               <BrandMark compact />
               <p className="mb-0 mt-4 text-[#617061]">
-                Create an account to draft for your team, follow live results, and review past tournaments. The first account created becomes the commissioner automatically.
+                {pendingLeagueSlug ? "You have a league invite. Sign in or create an account and we will add you to that league." : "Create an account to draft for your team, follow live results, and review past tournaments."}
               </p>
             </div>
 
@@ -2449,17 +2521,31 @@ export default function Page() {
                         <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{teams.length} total teams</span>
                       </div>
                       <div className="grid gap-4">
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <h4 className="m-0 font-[Georgia] text-lg">League Invites</h4>
+                            {currentLeague ? <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{currentLeague.name}</span> : null}
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                            <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueName} onChange={(event) => setNewLeagueName(event.target.value)} placeholder="Create a league, for example Rat Race Golf - 2027" />
+                            <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={createLeague}>Create League</button>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+                            <input className="rounded-xl border border-black/15 bg-white px-3 py-2 text-sm text-[#617061]" readOnly value={currentLeagueInviteUrl} placeholder="Invite link appears after selecting a league" />
+                            <div className="flex flex-wrap gap-2">
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={copyLeagueInviteLink}>Copy Link</button>
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={openLeagueInviteEmail}>Email</button>
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={openLeagueInviteSms}>SMS</button>
+                            </div>
+                          </div>
+                          <div className="text-sm text-[#617061]">Send this link to anyone who should join the league. They can create a new account or sign in with an existing one, and the app will add this league to their account.</div>
+                        </div>
                         {isSiteAdmin ? (
                           <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
                             <div className="flex items-center justify-between gap-3">
                               <h4 className="m-0 font-[Georgia] text-lg">Site Admin</h4>
                               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{leagues.length} leagues</span>
                             </div>
-                            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                              <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueName} onChange={(event) => setNewLeagueName(event.target.value)} placeholder="League name, for example Rat Race Golf - 2027" />
-                              <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={createLeague}>Create League</button>
-                            </div>
-                            <div className="text-sm text-[#617061]">League names can repeat. The app creates a unique league URL behind the scenes, like fantasy football and baseball platforms do.</div>
                             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                               <select className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueMemberId} onChange={(event) => setNewLeagueMemberId(event.target.value)}>
                                 <option value="">{availableSiteProfiles.length ? "Add existing account to this league" : "All accounts are in this league"}</option>
