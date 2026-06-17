@@ -1,7 +1,7 @@
 "use client";
 
 import type { KeyboardEvent } from "react";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
@@ -419,6 +419,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 }
 
 export default function Page() {
+  const draftFlowRef = useRef<HTMLDivElement | null>(null);
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -728,6 +729,16 @@ export default function Page() {
   useEffect(() => {
     autoRefreshFieldBeforeDraft();
   }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
+
+  useEffect(() => {
+    if (activeRoomTab !== "draft" || draftComplete) return;
+    const container = draftFlowRef.current;
+    const currentPick = container?.querySelector<HTMLElement>("[data-current-pick='true']");
+    if (!container || !currentPick) return;
+
+    const centeredLeft = currentPick.offsetLeft - (container.clientWidth - currentPick.clientWidth) / 2;
+    container.scrollTo({ left: Math.max(0, centeredLeft), behavior: "smooth" });
+  }, [activeRoomTab, currentSession?.id, draftComplete, draftPickTape.length, picks.length]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -2724,10 +2735,10 @@ export default function Page() {
                               <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#617061]">Draft Flow</div>
                               <div className="text-xs text-[#617061]">Scroll to see every pick in order</div>
                             </div>
-                            <div className="overflow-x-auto overflow-y-hidden pb-2">
+                            <div ref={draftFlowRef} className="overflow-x-auto overflow-y-hidden pb-2">
                               <div className="grid min-w-max auto-cols-[minmax(150px,180px)] grid-flow-col gap-2">
                               {!draftPickTape.length ? <div className="w-[260px] rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : draftPickTape.map((entry) => (
-                                <div key={entry.pickNumber} className={`grid min-h-[112px] content-start gap-1 rounded-2xl border p-3 text-sm ${
+                                <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} className={`grid min-h-[112px] content-start gap-1 rounded-2xl border p-3 text-sm ${
                                   entry.state === "current"
                                     ? "scale-[1.02] border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)]"
                                     : entry.state === "complete"
