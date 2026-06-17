@@ -647,6 +647,7 @@ export default function Page() {
   const totalPicks = assignedTeams.length * ROUNDS;
   const draftComplete = totalPicks > 0 && picks.length >= totalPicks;
   const currentRound = assignedTeams.length ? Math.floor(picks.length / assignedTeams.length) + 1 : 0;
+  const currentPickNumber = totalPicks ? Math.min(picks.length + 1, totalPicks) : 0;
   const draftPickTape = useMemo(() => {
     if (!assignedTeams.length) return [];
 
@@ -731,14 +732,26 @@ export default function Page() {
   }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
 
   useEffect(() => {
-    if (activeRoomTab !== "draft" || draftComplete) return;
+    if (activeRoomTab !== "draft" || draftComplete || !currentPickNumber) return;
     const container = draftFlowRef.current;
-    const currentPick = container?.querySelector<HTMLElement>("[data-current-pick='true']");
-    if (!container || !currentPick) return;
+    if (!container) return;
 
-    const centeredLeft = currentPick.offsetLeft - (container.clientWidth - currentPick.clientWidth) / 2;
-    container.scrollTo({ left: Math.max(0, centeredLeft), behavior: "smooth" });
-  }, [activeRoomTab, currentSession?.id, draftComplete, draftPickTape.length, picks.length]);
+    const scrollToCurrentPick = () => {
+      const currentPick = container.querySelector<HTMLElement>(`[data-pick-number='${currentPickNumber}']`);
+      if (!currentPick) return;
+
+      const targetLeft = currentPick.offsetLeft - container.clientWidth * 0.35 + currentPick.clientWidth / 2;
+      container.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+    };
+
+    const animationFrame = window.requestAnimationFrame(scrollToCurrentPick);
+    const timeout = window.setTimeout(scrollToCurrentPick, 150);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.clearTimeout(timeout);
+    };
+  }, [activeRoomTab, currentPickNumber, currentSession?.id, draftComplete, draftPickTape.length]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -2738,7 +2751,7 @@ export default function Page() {
                             <div ref={draftFlowRef} className="overflow-x-auto overflow-y-hidden pb-2">
                               <div className="grid min-w-max auto-cols-[minmax(150px,180px)] grid-flow-col gap-2">
                               {!draftPickTape.length ? <div className="w-[260px] rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : draftPickTape.map((entry) => (
-                                <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} className={`grid min-h-[112px] content-start gap-1 rounded-2xl border p-3 text-sm ${
+                                <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} className={`grid min-h-[112px] content-start gap-1 rounded-2xl border p-3 text-sm ${
                                   entry.state === "current"
                                     ? "scale-[1.02] border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)]"
                                     : entry.state === "complete"
