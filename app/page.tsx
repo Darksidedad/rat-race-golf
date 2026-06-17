@@ -986,6 +986,12 @@ export default function Page() {
     setStatusMessage("Password reset email sent. Open the link in that email and set your new password.");
   }
 
+  function handleAuthPasswordKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    void (authMode === "sign_up" ? signUp() : signIn());
+  }
+
   async function finishPasswordReset() {
     if (!recoveryPassword || !recoveryPasswordConfirm) {
       setStatusMessage("Enter your new password twice.");
@@ -2228,7 +2234,7 @@ export default function Page() {
                 </>
               ) : null}
               <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" />
-              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password" />
+              <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} onKeyDown={handleAuthPasswordKeyDown} placeholder="Password" />
               <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={authMode === "sign_up" ? signUp : signIn}>
                 {busy === "Creating account..." || busy === "Signing in..." ? busy : authMode === "sign_up" ? "Create Account" : "Sign In"}
               </button>
