@@ -85,6 +85,8 @@ const INVALID_PLAYER_TERMS = [
 
 function normalizeName(name: string) {
   return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/\s*[-–—]\s*(?:amateur|a)\b/g, "")
     .replace(/\s*\((?:amateur|a)\)\s*/g, " ")
@@ -204,7 +206,17 @@ function parseStoredTotal(total: string | null | undefined) {
 function parseStoredThru(total: string | null | undefined) {
   if (!total || !total.includes("||")) return null;
   const [, thru] = total.split("||");
-  return thru || null;
+  return normalizeStoredThru(thru);
+}
+
+function normalizeStoredThru(thru: string | null | undefined) {
+  if (!thru) return null;
+  const playoffThru = thru.trim().match(/^playoff\s+\d+\s+of\s*(\d+)$/i);
+  if (playoffThru) {
+    const playoffTotal = Number(playoffThru[1]);
+    return Number.isFinite(playoffTotal) && playoffTotal > 1 ? thru : "F";
+  }
+  return thru;
 }
 
 function parseStoredMeta(total: string | null | undefined) {
@@ -216,6 +228,8 @@ function parseStoredMeta(total: string | null | undefined) {
 function playoffLabel(meta: string | null | undefined) {
   if (!meta?.startsWith("PLAYOFF:")) return null;
   const [, rank, total] = meta.split(":");
+  const playoffTotal = Number(total);
+  if (!Number.isFinite(playoffTotal) || playoffTotal < 2) return null;
   return `Playoff ${rank || "?"} of ${total || "?"}`;
 }
 
@@ -230,14 +244,15 @@ function holesCompletedFromThru(thru: string | null | undefined) {
 
 function holesCompletedForDisplay(thru: string | null | undefined, meta: string | null | undefined) {
   if (playoffLabel(meta)) return 0;
-  return holesCompletedFromThru(thru);
+  return holesCompletedFromThru(normalizeStoredThru(thru));
 }
 
 function resultStatusLabel(position: number | null, total: string | null | undefined, thru: string | null | undefined, meta: string | null | undefined) {
+  const normalizedThru = normalizeStoredThru(thru);
   const playoff = playoffLabel(meta);
-  if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : thru ? ` - ${thru}` : ""}`;
-  if (!total && !thru && !playoff) return "No leaderboard match";
-  return playoff ?? thru ?? "CUT / no finish";
+  if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : normalizedThru ? ` - ${normalizedThru}` : ""}`;
+  if (!total && !normalizedThru && !playoff) return "No leaderboard match";
+  return playoff ?? normalizedThru ?? "CUT / no finish";
 }
 
 function formatProfileLabel(username: string, teamName: string | null | undefined) {
@@ -366,6 +381,9 @@ function teamLastNameSignature(name: string) {
 function lookupLeaderboardValue<T>(playerName: string, values: Record<string, T>) {
   const key = normalizeName(playerName);
   if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+
+  const normalizedKey = Object.keys(values).find((valueKey) => normalizeName(valueKey) === key);
+  if (normalizedKey) return values[normalizedKey];
 
   const signature = teamLastNameSignature(playerName);
   if (!signature) return undefined;

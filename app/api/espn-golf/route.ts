@@ -263,6 +263,8 @@ function splitCourseAndLocation(rawLocation: string | undefined) {
 
 function normalizeName(name: string) {
   return name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/\s*\/\s*/g, "/")
     .replace(/\./g, "")
@@ -452,6 +454,11 @@ function competitorThru(competitor: EspnCompetitor) {
   return null;
 }
 
+function completedRoundCount(competitor: EspnCompetitor) {
+  const rounds = Array.isArray(competitor.linescores) ? competitor.linescores : [];
+  return rounds.filter((round) => Array.isArray(round?.linescores) && round.linescores.length >= 18).length;
+}
+
 function encodeTotalWithThru(total: string | null, thru: string | null, meta: string | null = null) {
   if (!total && !thru && !meta) return null;
   return `${total ?? ""}||${thru ?? ""}||${meta ?? ""}`;
@@ -478,6 +485,7 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
       score: fetchableScore(competitor),
       total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
       thru: competitorThru(competitor),
+      completedRounds: completedRoundCount(competitor),
       sourceIndex,
     }))
     .filter((entry) => entry.name.trim())
@@ -491,18 +499,24 @@ function buildLeaderboard(competitors: EspnCompetitor[]) {
 
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
-  const playoffPlayers = rankedPlayers.filter((entry) => entry.score !== null && entry.score === rankedPlayers[0]?.score && entry.thru && entry.thru !== "F");
+  const tiedLeaders = rankedPlayers.filter((entry) => entry.score !== null && entry.score === rankedPlayers[0]?.score);
+  const hasFinalRoundPlayoff =
+    tiedLeaders.length > 1 &&
+    tiedLeaders.every((entry) => entry.completedRounds >= 4) &&
+    tiedLeaders.some((entry) => entry.thru && entry.thru !== "F");
+  const playoffPlayers = hasFinalRoundPlayoff ? tiedLeaders.filter((entry) => entry.thru && entry.thru !== "F") : [];
+  const playoffPlayerCount = playoffPlayers.length > 1 ? playoffPlayers.length : 0;
   let lastScore: number | null = null;
-    let lastPosition = 0;
-  
-    rankedPlayers.forEach((entry, index) => {
-      const playoffIndex = playoffPlayers.findIndex((player) => normalizeName(player.name) === normalizeName(entry.name));
-      const playoffMeta = playoffIndex >= 0 ? `PLAYOFF:${playoffIndex + 1}:${playoffPlayers.length}` : null;
-      totals[normalizeName(entry.name)] = encodeTotalWithThru(entry.total, entry.thru, playoffMeta);
-      if (entry.score === null) {
-        leaderboard[normalizeName(entry.name)] = null;
-        return;
-      }
+  let lastPosition = 0;
+
+  rankedPlayers.forEach((entry, index) => {
+    const playoffIndex = playoffPlayers.findIndex((player) => normalizeName(player.name) === normalizeName(entry.name));
+    const playoffMeta = playoffPlayerCount && playoffIndex >= 0 ? `PLAYOFF:${playoffIndex + 1}:${playoffPlayerCount}` : null;
+    totals[normalizeName(entry.name)] = encodeTotalWithThru(entry.total, entry.thru, playoffMeta);
+    if (entry.score === null) {
+      leaderboard[normalizeName(entry.name)] = null;
+      return;
+    }
 
     if (playoffIndex > 0) {
       leaderboard[normalizeName(entry.name)] = playoffIndex + 1;
