@@ -459,6 +459,23 @@ function completedRoundCount(competitor: EspnCompetitor) {
   return rounds.filter((round) => Array.isArray(round?.linescores) && round.linescores.length >= 18).length;
 }
 
+function hasActiveRound(competitor: EspnCompetitor) {
+  const rounds = Array.isArray(competitor.linescores) ? competitor.linescores : [];
+  return rounds.some((round) => Array.isArray(round?.linescores) && round.linescores.length > 0 && round.linescores.length < 18);
+}
+
+function nonScoringStatus(competitor: EspnCompetitor, maxCompletedRounds: number) {
+  const scoreText = displayGolfScore(competitor.score);
+  if (scoreText === "CUT" || scoreText === "WD" || scoreText === "DQ") return scoreText;
+
+  const completedRounds = completedRoundCount(competitor);
+  if (maxCompletedRounds > 2 && completedRounds >= 2 && completedRounds < maxCompletedRounds && !hasActiveRound(competitor)) {
+    return "CUT";
+  }
+
+  return null;
+}
+
 function encodeTotalWithThru(total: string | null, thru: string | null, meta: string | null = null) {
   if (!total && !thru && !meta) return null;
   return `${total ?? ""}||${thru ?? ""}||${meta ?? ""}`;
@@ -479,15 +496,19 @@ function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions
 }
 
 function buildLeaderboard(competitors: EspnCompetitor[]) {
+  const maxCompletedRounds = Math.max(0, ...competitors.map((competitor) => completedRoundCount(competitor)));
   const rankedPlayers = competitors
-    .map((competitor, sourceIndex) => ({
-      name: competitorName(competitor),
-      score: fetchableScore(competitor),
-      total: displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
-      thru: competitorThru(competitor),
-      completedRounds: completedRoundCount(competitor),
-      sourceIndex,
-    }))
+    .map((competitor, sourceIndex) => {
+      const status = nonScoringStatus(competitor, maxCompletedRounds);
+      return {
+        name: competitorName(competitor),
+        score: status ? null : fetchableScore(competitor),
+        total: status ?? displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
+        thru: status ?? competitorThru(competitor),
+        completedRounds: completedRoundCount(competitor),
+        sourceIndex,
+      };
+    })
     .filter((entry) => entry.name.trim())
     .sort((a, b) => {
       if (a.score === null && b.score === null) return a.name.localeCompare(b.name);
