@@ -188,6 +188,12 @@ function pointsForPosition(position: number | null) {
   return position === null || position < 1 ? 0 : Math.max(0, 51 - position);
 }
 
+function isNonScoringResult(total: string | null | undefined, thru: string | null | undefined) {
+  const totalValue = String(total ?? "").trim().toUpperCase();
+  const thruValue = String(thru ?? "").trim().toUpperCase();
+  return totalValue === "CUT" || totalValue === "WD" || totalValue === "DQ" || thruValue === "CUT" || thruValue === "WD" || thruValue === "DQ";
+}
+
 function totalColorClass(total: string | null | undefined) {
   const value = String(total ?? "").trim().toUpperCase();
   if (!value) return "text-[#617061]";
@@ -708,12 +714,12 @@ export default function Page() {
           const displayTotal = parseStoredTotal(total);
           const thru = parseStoredThru(total);
           const meta = parseStoredMeta(total);
-            return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position) };
+            return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position), nonScoring: isNonScoringResult(displayTotal, thru) };
           });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
       const countingKeys = new Set(
         [...playerScores]
-          .sort((a, b) => b.points - a.points)
+          .sort((a, b) => b.points - a.points || Number(a.nonScoring) - Number(b.nonScoring) || a.pick_number - b.pick_number)
           .slice(0, 3)
           .map((player) => player.id)
       );
