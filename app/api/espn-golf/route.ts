@@ -48,6 +48,7 @@ const TOUR_ENDPOINTS: Record<string, { label: string; slug: string; scheduleSlug
 };
 
 const US_OPEN_2026_EVENT_ID = "401811952";
+const TRAVELERS_2026_EVENT_ID = "401811953";
 const US_OPEN_2026_FIELD = [
   "Aaron Rai",
   "Adam Scott",
@@ -207,6 +208,80 @@ const US_OPEN_2026_FIELD = [
   "Zac Blair",
 ];
 
+const TRAVELERS_2026_FIELD = [
+  "Aaron Rai",
+  "Adam Scott",
+  "Akshay Bhatia",
+  "Alex Fitzpatrick",
+  "Alex Noren",
+  "Alex Smalley",
+  "Andrew Novak",
+  "Ben Griffin",
+  "Ben James",
+  "Brandt Snedeker",
+  "Brian Campbell",
+  "Brian Harman",
+  "Bud Cauley",
+  "Cameron Young",
+  "Chris Gotterup",
+  "Collin Morikawa",
+  "Corey Conners",
+  "Daniel Berger",
+  "Denny McCarthy",
+  "Eric Cole",
+  "Gary Woodland",
+  "Harris English",
+  "Harry Hall",
+  "Hideki Matsuyama",
+  "J.J. Spaun",
+  "J.T. Poston",
+  "Jackson Suber",
+  "Jacob Bridgeman",
+  "Jake Knapp",
+  "Jason Day",
+  "Jhonattan Vegas",
+  "Jordan Spieth",
+  "Justin Rose",
+  "Justin Thomas",
+  "Keegan Bradley",
+  "Kristoffer Reitan",
+  "Kurt Kitayama",
+  "Lucas Glover",
+  "Ludvig Aberg",
+  "Mac Meissner",
+  "Mark Hubbard",
+  "Matt Fitzpatrick",
+  "Matt McCarthy",
+  "Maverick McNealy",
+  "Michael Kim",
+  "Min Woo Lee",
+  "Nico Echavarria",
+  "Nicolai Hojgaard",
+  "Nick Taylor",
+  "Patrick Cantlay",
+  "Rickie Fowler",
+  "Robert MacIntyre",
+  "Russell Henley",
+  "Ryan Fox",
+  "Ryan Gerard",
+  "Ryo Hisatsune",
+  "Sahith Theegala",
+  "Sam Burns",
+  "Sam Stevens",
+  "Scottie Scheffler",
+  "Sepp Straka",
+  "Shane Lowry",
+  "Si Woo Kim",
+  "Sungjae Im",
+  "Taylor Pendrith",
+  "Tom Hoge",
+  "Tommy Fleetwood",
+  "Tony Finau",
+  "Viktor Hovland",
+  "Wyndham Clark",
+  "Xander Schauffele",
+];
+
 function resolveTour(rawTour: string | null) {
   return TOUR_ENDPOINTS[String(rawTour ?? "pga").toLowerCase()] ?? TOUR_ENDPOINTS.pga;
 }
@@ -219,6 +294,7 @@ function tourSearchOrder(rawTour: string | null) {
 
 function decodeHtmlText(text: string) {
   return text
+    .replace(/\u00a0/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&#x27;/g, "'")
     .replace(/&quot;/g, '"')
@@ -678,6 +754,27 @@ function extractPlayersFromUsgaJson(payload: any) {
   return players.sort((a, b) => a.localeCompare(b));
 }
 
+function extractPlayersFromListAfterHeading(html: string, headingPattern: RegExp) {
+  const headingMatch = headingPattern.exec(html);
+  if (headingMatch?.index == null) return [];
+
+  const afterHeading = html.slice(headingMatch.index);
+  const listMatch = afterHeading.match(/<ul[^>]*>([\s\S]*?)<\/ul>/i);
+  if (!listMatch) return [];
+
+  const seen = new Set<string>();
+  const players: string[] = [];
+  for (const match of listMatch[1].matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)) {
+    const player = cleanHtmlText(match[1]).replace(/\s+/g, " ").trim();
+    const key = normalizeName(player);
+    if (!player || seen.has(key)) continue;
+    seen.add(key);
+    players.push(player);
+  }
+
+  return players.sort((a, b) => a.localeCompare(b));
+}
+
 async function fetchUsgaFieldForEvent(eventName: string | undefined, eventId: string | null) {
   const isUsOpen = Boolean(eventName && /\bu\.?s\.?\s+open\b/i.test(eventName)) || eventId === US_OPEN_2026_EVENT_ID;
   if (!isUsOpen) return null;
@@ -702,6 +799,29 @@ async function fetchUsgaFieldForEvent(eventName: string | undefined, eventId: st
     return {
       players: US_OPEN_2026_FIELD,
       source: "USGA 2026 U.S. Open published field snapshot",
+    };
+  }
+
+  return null;
+}
+
+async function fetchTravelersFieldForEvent(eventName: string | undefined, eventId: string | null) {
+  const isTravelers = eventId === TRAVELERS_2026_EVENT_ID || Boolean(eventName && /\btravelers\s+championship\b/i.test(eventName));
+  if (!isTravelers) return null;
+
+  const url = "https://www.ctinsider.com/sports/article/travelers-championship-golf-2026-field-players-22312841.php";
+  try {
+    const html = await fetchText(url);
+    const players = extractPlayersFromListAfterHeading(html, /<h2[^>]*>\s*2026\s+Travelers\s+Championship\s+field\s*<\/h2>/i);
+    if (players.length) return { players, source: url };
+  } catch {
+    // CT Insider published the pre-tournament field before ESPN exposed competitors.
+  }
+
+  if (eventId === TRAVELERS_2026_EVENT_ID) {
+    return {
+      players: TRAVELERS_2026_FIELD,
+      source: "CT Insider 2026 Travelers Championship published field snapshot",
     };
   }
 
@@ -856,6 +976,16 @@ export async function GET(req: NextRequest) {
           eventName,
           players: usgaField.players,
           source: usgaField.source,
+        });
+      }
+
+      const travelersField = await fetchTravelersFieldForEvent(eventName, eventId);
+      if (travelersField?.players.length) {
+        return NextResponse.json({
+          ok: true,
+          eventName,
+          players: travelersField.players,
+          source: travelersField.source,
         });
       }
     }
