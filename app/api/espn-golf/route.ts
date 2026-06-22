@@ -464,11 +464,19 @@ function hasActiveRound(competitor: EspnCompetitor) {
   return rounds.some((round) => Array.isArray(round?.linescores) && round.linescores.length > 0 && round.linescores.length < 18);
 }
 
-function nonScoringStatus(competitor: EspnCompetitor, maxCompletedRounds: number) {
+function eventIsCompleted(event: any) {
+  return Boolean(event?.status?.type?.completed ?? event?.competitions?.[0]?.status?.type?.completed);
+}
+
+function nonScoringStatus(competitor: EspnCompetitor, maxCompletedRounds: number, eventCompleted: boolean) {
   const scoreText = displayGolfScore(competitor.score);
   if (scoreText === "CUT" || scoreText === "WD" || scoreText === "DQ") return scoreText;
 
   const completedRounds = completedRoundCount(competitor);
+  if (eventCompleted && maxCompletedRounds > 0 && completedRounds < maxCompletedRounds) {
+    return completedRounds >= 2 ? "CUT" : "WD";
+  }
+
   if (maxCompletedRounds > 2 && completedRounds >= 2 && completedRounds < maxCompletedRounds && !hasActiveRound(competitor)) {
     return "CUT";
   }
@@ -482,7 +490,7 @@ function encodeTotalWithThru(total: string | null, thru: string | null, meta: st
 }
 
 function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions: Record<string, number | null>) {
-  const eventCompleted = Boolean(event?.status?.type?.completed ?? event?.competitions?.[0]?.status?.type?.completed);
+  const eventCompleted = eventIsCompleted(event);
   if (!eventCompleted) return false;
 
   const allCompetitorsClosed = competitors.every((competitor) => {
@@ -495,11 +503,11 @@ function shouldAutoFinalize(event: any, competitors: EspnCompetitor[], positions
   return firstPlaceCount === 1;
 }
 
-function buildLeaderboard(competitors: EspnCompetitor[]) {
+function buildLeaderboard(competitors: EspnCompetitor[], eventCompleted = false) {
   const maxCompletedRounds = Math.max(0, ...competitors.map((competitor) => completedRoundCount(competitor)));
   const rankedPlayers = competitors
     .map((competitor, sourceIndex) => {
-      const status = nonScoringStatus(competitor, maxCompletedRounds);
+      const status = nonScoringStatus(competitor, maxCompletedRounds, eventCompleted);
       return {
         name: competitorName(competitor),
         score: status ? null : fetchableScore(competitor),
@@ -876,7 +884,7 @@ export async function GET(req: NextRequest) {
     }
 
       if (action === "leaderboard") {
-        const liveLeaderboard = buildLeaderboard(competitors);
+        const liveLeaderboard = buildLeaderboard(competitors, eventIsCompleted(event));
         return NextResponse.json({
           ok: true,
           eventName,
