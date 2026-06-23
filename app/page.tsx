@@ -754,8 +754,11 @@ export default function Page() {
     const currentPick = container.querySelector<HTMLElement>(`[data-pick-number='${activePickNumber}']`);
     if (!currentPick) return;
 
-    const targetLeft = currentPick.offsetLeft - (container.clientWidth - currentPick.clientWidth) / 2;
-    container.scrollTo({ left: Math.max(0, targetLeft), behavior });
+    const containerRect = container.getBoundingClientRect();
+    const currentPickRect = currentPick.getBoundingClientRect();
+    const targetLeft = container.scrollLeft + currentPickRect.left - containerRect.left - (container.clientWidth - currentPickRect.width) / 2;
+    const maxLeft = Math.max(0, container.scrollWidth - container.clientWidth);
+    container.scrollTo({ left: Math.min(Math.max(0, targetLeft), maxLeft), behavior });
   }, [currentPickNumber, draftComplete, totalPicks]);
 
   useEffect(() => {
@@ -2798,27 +2801,31 @@ export default function Page() {
                             {!draftPickTape.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : (
                               <div ref={draftFlowRef} className="overflow-x-auto overflow-y-hidden pb-2">
                                 <div className="flex gap-2" style={{ paddingInline: draftFlowCenterPadding ? `${draftFlowCenterPadding}px` : undefined }}>
-                                  {draftPickTape.map((entry) => (
-                                    <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: draftFlowCardWidth ? `${draftFlowCardWidth}px` : "150px" }} className={`grid min-h-[112px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
-                                      entry.state === "current"
-                                        ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
-                                        : entry.state === "complete"
-                                          ? "border-black/10 bg-[#f7f2e9] text-[#617061]"
-                                          : "border-black/10 bg-white text-[#1f2a1d]"
-                                    }`}>
-                                      <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
-                                      <div className="break-words font-semibold leading-tight">{entry.team?.name}</div>
-                                      {entry.pick ? (
-                                        <div className={`mt-1 break-words rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
-                                          {entry.pick.player_name}
-                                        </div>
-                                      ) : (
-                                        <div className={`mt-1 text-xs ${entry.state === "current" ? "text-white/90" : "text-[#617061]"}`}>
-                                          {entry.state === "current" ? "Drafting now" : "Upcoming"}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ))}
+                                  {draftPickTape.map((entry) => {
+                                    const oddsLabel = entry.pick ? playerOddsLabel(entry.pick.player_name) : null;
+                                    return (
+                                      <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: draftFlowCardWidth ? `${draftFlowCardWidth}px` : "150px" }} className={`grid min-h-[112px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
+                                        entry.state === "current"
+                                          ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
+                                          : entry.state === "complete"
+                                            ? "border-black/10 bg-[#f7f2e9] text-[#617061]"
+                                            : "border-black/10 bg-white text-[#1f2a1d]"
+                                      }`}>
+                                        <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
+                                        <div className="break-words font-semibold leading-tight">{entry.team?.name}</div>
+                                        {entry.pick ? (
+                                          <div className={`mt-1 grid gap-1 break-words rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
+                                            <span>{entry.pick.player_name}</span>
+                                            {oddsLabel ? <span className={`text-[11px] font-semibold ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>{oddsLabel}</span> : null}
+                                          </div>
+                                        ) : (
+                                          <div className={`mt-1 text-xs ${entry.state === "current" ? "text-white/90" : "text-[#617061]"}`}>
+                                            {entry.state === "current" ? "Drafting now" : "Upcoming"}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               </div>
                             )}
