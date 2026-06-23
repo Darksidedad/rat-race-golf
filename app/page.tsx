@@ -1,7 +1,7 @@
 "use client";
 
 import type { KeyboardEvent } from "react";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
@@ -442,10 +442,10 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
   );
 }
 
-const DRAFT_FLOW_VISIBLE_SLOTS = 5;
 const DRAFT_FLOW_CENTER_INDEX = 2;
 
 export default function Page() {
+  const draftFlowRef = useRef<HTMLDivElement | null>(null);
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -691,20 +691,6 @@ export default function Page() {
       };
     });
   }, [assignedTeams, draftComplete, picks, totalPicks]);
-  const draftFlowWindow = useMemo(() => {
-    if (!draftPickTape.length) return [];
-
-    const activePickNumber = draftComplete ? totalPicks : currentPickNumber;
-    const activeIndex = Math.max(0, draftPickTape.findIndex((entry) => entry.pickNumber === activePickNumber));
-
-    return Array.from({ length: DRAFT_FLOW_VISIBLE_SLOTS }, (_, slotIndex) => {
-      const pickIndex = activeIndex + slotIndex - DRAFT_FLOW_CENTER_INDEX;
-      return {
-        slotIndex,
-        entry: pickIndex >= 0 && pickIndex < draftPickTape.length ? draftPickTape[pickIndex] : null,
-      };
-    });
-  }, [currentPickNumber, draftComplete, draftPickTape, totalPicks]);
   const teamDraftRosters = useMemo(() => {
     const claimedTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? "";
     return assignedTeams
@@ -770,6 +756,29 @@ export default function Page() {
   useEffect(() => {
     autoRefreshFieldBeforeDraft();
   }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
+
+  useEffect(() => {
+    if (activeRoomTab !== "draft" || !currentPickNumber) return;
+    const container = draftFlowRef.current;
+    if (!container) return;
+
+    const scrollToCurrentPick = () => {
+      const activePickNumber = draftComplete ? totalPicks : currentPickNumber;
+      const currentPick = container.querySelector<HTMLElement>(`[data-pick-number='${activePickNumber}']`);
+      if (!currentPick) return;
+
+      const targetLeft = currentPick.offsetLeft - (container.clientWidth - currentPick.clientWidth) / 2;
+      container.scrollTo({ left: Math.max(0, targetLeft), behavior: "smooth" });
+    };
+
+    const animationFrame = window.requestAnimationFrame(scrollToCurrentPick);
+    const timeout = window.setTimeout(scrollToCurrentPick, 150);
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.clearTimeout(timeout);
+    };
+  }, [activeRoomTab, currentPickNumber, currentSession?.id, draftComplete, draftPickTape.length, totalPicks]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -2764,44 +2773,49 @@ export default function Page() {
                           <div className="grid gap-2 rounded-3xl border border-black/10 bg-white/80 p-3">
                             <div className="flex items-center justify-between gap-3 px-1">
                               <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#617061]">Draft Flow</div>
-                              <div className="text-xs text-[#617061]">Last 2 - current - next 2</div>
+                              <div className="text-xs text-[#617061]">Slide to review every pick</div>
                             </div>
-                            <div className="grid grid-cols-5 gap-1 sm:gap-2">
-                              {!draftPickTape.length ? <div className="col-span-5 rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : draftFlowWindow.map(({ entry, slotIndex }) => {
-                                if (!entry) {
-                                  const isBeforeDraft = slotIndex < DRAFT_FLOW_CENTER_INDEX;
-                                  return (
-                                    <div key={`empty-${slotIndex}`} className="grid min-h-[112px] min-w-0 content-start gap-1 overflow-hidden rounded-2xl border border-dashed border-black/10 bg-[#f7f2e9]/55 p-2 text-xs text-[#617061]/80 sm:p-3 sm:text-sm">
-                                      <div className="text-[10px] font-semibold uppercase tracking-[0.14em]">{isBeforeDraft ? "Start" : "End"}</div>
-                                      <div className="break-words font-semibold leading-tight">{isBeforeDraft ? "No earlier pick" : "No later pick"}</div>
-                                      <div className="mt-1 text-xs">{isBeforeDraft ? "Draft begins here" : "Draft ends here"}</div>
-                                    </div>
-                                  );
-                                }
-
-                                return (
-                                  <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} className={`grid min-h-[112px] min-w-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
-                                    entry.state === "current"
-                                      ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
-                                      : entry.state === "complete"
-                                        ? "border-black/10 bg-[#f7f2e9] text-[#617061]"
-                                        : "border-black/10 bg-white text-[#1f2a1d]"
-                                  }`}>
-                                    <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
-                                    <div className="break-words font-semibold leading-tight">{entry.team?.name}</div>
-                                    {entry.pick ? (
-                                      <div className={`mt-1 break-words rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
-                                        {entry.pick.player_name}
+                            {!draftPickTape.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : (
+                              <div ref={draftFlowRef} className="overflow-x-auto overflow-y-hidden pb-2">
+                                <div className="grid grid-flow-col gap-2" style={{ gridAutoColumns: "calc((100% - 2rem) / 5)" }}>
+                                    {Array.from({ length: DRAFT_FLOW_CENTER_INDEX }, (_, spacerIndex) => (
+                                      <div key={`start-spacer-${spacerIndex}`} className="grid min-h-[112px] min-w-0 content-start gap-1 overflow-hidden rounded-2xl border border-dashed border-black/10 bg-[#f7f2e9]/55 p-2 text-xs text-[#617061]/80 sm:p-3 sm:text-sm">
+                                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em]">Start</div>
+                                        <div className="break-words font-semibold leading-tight">No earlier pick</div>
+                                        <div className="mt-1 text-xs">Draft begins here</div>
                                       </div>
-                                    ) : (
-                                      <div className={`mt-1 text-xs ${entry.state === "current" ? "text-white/90" : "text-[#617061]"}`}>
-                                        {entry.state === "current" ? "Drafting now" : "Upcoming"}
+                                    ))}
+                                    {draftPickTape.map((entry) => (
+                                      <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} className={`grid min-h-[112px] min-w-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
+                                        entry.state === "current"
+                                          ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
+                                          : entry.state === "complete"
+                                            ? "border-black/10 bg-[#f7f2e9] text-[#617061]"
+                                            : "border-black/10 bg-white text-[#1f2a1d]"
+                                      }`}>
+                                        <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
+                                        <div className="break-words font-semibold leading-tight">{entry.team?.name}</div>
+                                        {entry.pick ? (
+                                          <div className={`mt-1 break-words rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
+                                            {entry.pick.player_name}
+                                          </div>
+                                        ) : (
+                                          <div className={`mt-1 text-xs ${entry.state === "current" ? "text-white/90" : "text-[#617061]"}`}>
+                                            {entry.state === "current" ? "Drafting now" : "Upcoming"}
+                                          </div>
+                                        )}
                                       </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
+                                    ))}
+                                    {Array.from({ length: DRAFT_FLOW_CENTER_INDEX }, (_, spacerIndex) => (
+                                      <div key={`end-spacer-${spacerIndex}`} className="grid min-h-[112px] min-w-0 content-start gap-1 overflow-hidden rounded-2xl border border-dashed border-black/10 bg-[#f7f2e9]/55 p-2 text-xs text-[#617061]/80 sm:p-3 sm:text-sm">
+                                        <div className="text-[10px] font-semibold uppercase tracking-[0.14em]">End</div>
+                                        <div className="break-words font-semibold leading-tight">No later pick</div>
+                                        <div className="mt-1 text-xs">Draft ends here</div>
+                                      </div>
+                                    ))}
+                                </div>
+                              </div>
+                            )}
                           </div>
                             <div className="grid gap-3 overflow-x-hidden pr-0">
                               <div className="flex flex-wrap items-center justify-between gap-3">
