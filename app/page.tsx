@@ -444,8 +444,6 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 
 export default function Page() {
   const draftFlowRef = useRef<HTMLDivElement | null>(null);
-  const draftFlowSnapTimeoutRef = useRef<number | null>(null);
-  const draftFlowAutoScrollingRef = useRef(false);
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -740,6 +738,9 @@ export default function Page() {
   const ownedTeamNames = currentUsersTeams.map((team) => team.name);
   const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
   const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
+  const [draftFlowWidth, setDraftFlowWidth] = useState(0);
+  const draftFlowCardWidth = draftFlowWidth ? Math.max(0, (draftFlowWidth - 32) / 5) : 0;
+  const draftFlowCenterPadding = draftFlowWidth && draftFlowCardWidth ? (draftFlowWidth - draftFlowCardWidth) / 2 : 0;
   const availableSiteProfiles = useMemo(() => {
     const memberIds = new Set(profiles.map((entry) => entry.id));
     return siteProfiles.filter((entry) => !memberIds.has(entry.id));
@@ -754,19 +755,8 @@ export default function Page() {
     if (!currentPick) return;
 
     const targetLeft = currentPick.offsetLeft - (container.clientWidth - currentPick.clientWidth) / 2;
-    draftFlowAutoScrollingRef.current = true;
     container.scrollTo({ left: Math.max(0, targetLeft), behavior });
-    window.setTimeout(() => {
-      draftFlowAutoScrollingRef.current = false;
-    }, behavior === "smooth" ? 700 : 0);
   }, [currentPickNumber, draftComplete, totalPicks]);
-  const handleDraftFlowScroll = useCallback(() => {
-    if (draftFlowAutoScrollingRef.current) return;
-    if (draftFlowSnapTimeoutRef.current) window.clearTimeout(draftFlowSnapTimeoutRef.current);
-    draftFlowSnapTimeoutRef.current = window.setTimeout(() => {
-      centerDraftFlowOnCurrentPick();
-    }, 900);
-  }, [centerDraftFlowOnCurrentPick]);
 
   useEffect(() => {
     autoImportMissingPlayerPool();
@@ -781,6 +771,24 @@ export default function Page() {
   }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
 
   useEffect(() => {
+    if (activeRoomTab !== "draft" || !draftPickTape.length) return;
+    const container = draftFlowRef.current;
+    if (!container) return;
+
+    const updateDraftFlowWidth = () => setDraftFlowWidth(container.clientWidth);
+    updateDraftFlowWidth();
+
+    const observer = new ResizeObserver(updateDraftFlowWidth);
+    observer.observe(container);
+    window.addEventListener("resize", updateDraftFlowWidth);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateDraftFlowWidth);
+    };
+  }, [activeRoomTab, draftPickTape.length]);
+
+  useEffect(() => {
     if (activeRoomTab !== "draft" || !currentPickNumber) return;
 
     const animationFrame = window.requestAnimationFrame(() => centerDraftFlowOnCurrentPick());
@@ -790,11 +798,7 @@ export default function Page() {
       window.cancelAnimationFrame(animationFrame);
       window.clearTimeout(timeout);
     };
-  }, [activeRoomTab, currentPickNumber, currentSession?.id, draftPickTape.length, centerDraftFlowOnCurrentPick]);
-
-  useEffect(() => () => {
-    if (draftFlowSnapTimeoutRef.current) window.clearTimeout(draftFlowSnapTimeoutRef.current);
-  }, []);
+  }, [activeRoomTab, currentPickNumber, currentSession?.id, draftPickTape.length, draftFlowWidth, centerDraftFlowOnCurrentPick]);
 
   useEffect(() => {
     if (!availablePlayers.length) {
@@ -2792,10 +2796,10 @@ export default function Page() {
                               <div className="text-xs text-[#617061]">Slide to review every pick</div>
                             </div>
                             {!draftPickTape.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-3 text-sm text-[#617061]">Set the draft order to see the pick flow.</div> : (
-                              <div ref={draftFlowRef} onScroll={handleDraftFlowScroll} className="overflow-x-auto overflow-y-hidden pb-2">
-                                <div className="flex gap-2" style={{ paddingInline: "calc((100% - ((100% - 2rem) / 5)) / 2)" }}>
+                              <div ref={draftFlowRef} className="overflow-x-auto overflow-y-hidden pb-2">
+                                <div className="flex gap-2" style={{ paddingInline: draftFlowCenterPadding ? `${draftFlowCenterPadding}px` : undefined }}>
                                   {draftPickTape.map((entry) => (
-                                    <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: "calc((100% - 2rem) / 5)" }} className={`grid min-h-[112px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
+                                    <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: draftFlowCardWidth ? `${draftFlowCardWidth}px` : "150px" }} className={`grid min-h-[112px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
                                       entry.state === "current"
                                         ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
                                         : entry.state === "complete"
