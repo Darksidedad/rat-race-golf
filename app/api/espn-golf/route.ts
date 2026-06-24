@@ -34,6 +34,7 @@ type EventOption = {
   id: string;
   name: string;
   season: number;
+  startDate?: string;
   dateLabel?: string;
   location?: string;
   course?: string;
@@ -327,6 +328,13 @@ function formatEventDateRange(start: string | null | undefined, end: string | nu
   return startMonth === endMonth ? `${startMonth} ${startDay} - ${endDay}` : `${startMonth} ${startDay} - ${endMonth} ${endDay}`;
 }
 
+function scheduleStartDate(dateLabel: string | undefined, season: number) {
+  const match = dateLabel?.match(/^([A-Za-z]{3})\s+(\d{1,2})/);
+  if (!match) return undefined;
+  const parsed = new Date(`${match[1]} ${match[2]}, ${season} 12:00:00 UTC`);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
 function splitCourseAndLocation(rawLocation: string | undefined) {
   if (!rawLocation) return {};
   const [course, ...rest] = rawLocation.split(/\s+-\s+/);
@@ -387,6 +395,7 @@ function extractEventsFromScoreboard(scoreboardJson: any, season: number) {
       id: String(event?.id ?? ""),
       name: String(event?.name ?? event?.shortName ?? "").trim(),
       season,
+      startDate: event?.date,
       dateLabel: formatEventDateRange(event?.date, event?.endDate),
     }))
     .filter((event: EventOption) => event.id && event.name);
@@ -404,7 +413,7 @@ function extractEventsFromScheduleHtml(html: string, season: number) {
     const rawLocation = cleanHtmlText(rowHtml.match(/eventAndLocation__tournamentLocation[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "") || undefined;
     const { course, location } = splitCourseAndLocation(rawLocation);
     if (!id || !name || deduped.has(id)) continue;
-    deduped.set(id, { id, name, season, dateLabel, course, location });
+    deduped.set(id, { id, name, season, startDate: scheduleStartDate(dateLabel, season), dateLabel, course, location });
   }
 
   return Array.from(deduped.values());
@@ -419,6 +428,7 @@ function mergeEvents(...collections: EventOption[][]) {
       merged.set(event.id, existing ? {
         ...existing,
         name: existing.name || event.name,
+        startDate: existing.startDate ?? event.startDate,
         dateLabel: existing.dateLabel ?? event.dateLabel,
         course: existing.course ?? event.course,
         location: existing.location ?? event.location,

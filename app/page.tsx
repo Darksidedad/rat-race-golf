@@ -5,7 +5,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
-type EventOption = { id: string; name: string; season: number; dateLabel?: string; location?: string; course?: string };
+type EventOption = { id: string; name: string; season: number; startDate?: string; dateLabel?: string; location?: string; course?: string };
 type DraftSession = {
   id: string;
   league_id: string | null;
@@ -111,6 +111,11 @@ function formatOdds(odds: number | null | undefined) {
 function formatRefreshTime(value: string | null | undefined) {
   if (!value) return "Never";
   return new Date(value).toLocaleString();
+}
+
+function formatTournamentDate(value: string | null | undefined, season: number | null | undefined) {
+  if (!value) return String(season ?? "");
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
 }
 
 function isMissingColumnError(error: { message?: string; code?: string } | null | undefined, columnName: string) {
@@ -475,6 +480,7 @@ export default function Page() {
   const [teams, setTeams] = useState<DraftTeam[]>([]);
   const [picks, setPicks] = useState<DraftPick[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
+  const [sessionEventDates, setSessionEventDates] = useState<Record<string, string>>({});
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
   const [newDraftSeason, setNewDraftSeason] = useState(CURRENT_GOLF_SEASON);
@@ -519,6 +525,12 @@ export default function Page() {
     () => sessions.filter(sessionCountsForSeason),
     [sessions]
   );
+  const sortedSessions = useMemo(() => [...sessions].sort((a, b) => {
+    const aDate = sessionEventDates[a.id] ?? `${a.event_season ?? 0}-01-01`;
+    const bDate = sessionEventDates[b.id] ?? `${b.event_season ?? 0}-01-01`;
+    const dateDifference = new Date(bDate).getTime() - new Date(aDate).getTime();
+    return dateDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  }), [sessionEventDates, sessions]);
   const currentLeagueInviteUrl = useMemo(() => {
     if (typeof window === "undefined" || !currentLeague?.slug) return "";
     const url = new URL(window.location.origin + window.location.pathname);
@@ -607,8 +619,16 @@ export default function Page() {
     void loadSessions();
   }, [authChecked, user, currentLeagueId]);
   useEffect(() => {
-    if (!selectedSessionId && sessions[0]?.id) setSelectedSessionId(sessions[0].id);
-  }, [sessions, selectedSessionId]);
+    if (!selectedSessionId && sortedSessions[0]?.id) setSelectedSessionId(sortedSessions[0].id);
+  }, [selectedSessionId, sortedSessions]);
+
+  useEffect(() => {
+    if (!sessions.length) {
+      setSessionEventDates({});
+      return;
+    }
+    void loadSessionEventDates(sessions);
+  }, [sessions]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1519,6 +1539,37 @@ export default function Page() {
       return;
     }
     setSessions((data ?? []) as DraftSession[]);
+  }
+
+  async function loadSessionEventDates(sessionList: DraftSession[]) {
+    const groups = new Map<string, { tour: string; season: number; sessions: DraftSession[] }>();
+    sessionList.forEach((session) => {
+      if (!session.event_id) return;
+      const tour = session.event_tour ?? "pga";
+      const season = session.event_season ?? CURRENT_GOLF_SEASON;
+      const key = `${tour}:${season}`;
+      const group = groups.get(key) ?? { tour, season, sessions: [] };
+      group.sessions.push(session);
+      groups.set(key, group);
+    });
+
+    const dateEntries = await Promise.all(Array.from(groups.values()).map(async (group) => {
+      try {
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(group.tour)}&season=${group.season}`);
+        const payload: EspnEventsResponse = await response.json();
+        if (!payload.ok || !payload.events) return [];
+        const eventsById = new Map(payload.events.map((event) => [event.id, event]));
+        return group.sessions.flatMap((session) => {
+          const startDate = session.event_id ? eventsById.get(session.event_id)?.startDate : undefined;
+          return startDate ? [[session.id, startDate] as const] : [];
+        });
+      } catch (error) {
+        console.error(error);
+        return [];
+      }
+    }));
+
+    setSessionEventDates(Object.fromEntries(dateEntries.flat()));
   }
 
   async function loadSession(sessionId: string, setLoading = true) {
@@ -2601,7 +2652,7 @@ export default function Page() {
               </div>
             )}
               <div className="mt-5 grid gap-3">
-                {!sessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sessions.map((session) => (
+                {!sortedSessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sortedSessions.map((session) => (
                 <div key={session.id} className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
                   <button className="min-w-0 text-left" onClick={() => setSelectedSessionId(session.id)}>
                       <div className="flex items-center justify-between gap-3">
@@ -2609,7 +2660,7 @@ export default function Page() {
                         <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
-                        <span>{session.event_season ?? CURRENT_GOLF_SEASON}</span>
+                        <span>{formatTournamentDate(sessionEventDates[session.id], session.event_season)}</span>
                         <span>{sessionCountsForSeason(session) ? "Season event" : "Side event"}</span>
                       </div>
                     </button>
@@ -3169,12 +3220,12 @@ export default function Page() {
                           </span>
                         </div>
                         <div className="grid gap-2">
-                          {sessions.map((session) => (
+                          {sortedSessions.map((session) => (
                             <label key={session.id} className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/80 px-4 py-3">
                               <input type="checkbox" checked={sessionCountsForSeason(session)} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
                               <span className="min-w-0">
                                 <span className="block truncate font-semibold">{session.event_name ?? session.name}</span>
-                                <span className="block text-xs text-[#617061]">{session.event_season ?? CURRENT_GOLF_SEASON} | {statusLabel(session.status)}</span>
+                                <span className="block text-xs text-[#617061]">{formatTournamentDate(sessionEventDates[session.id], session.event_season)} | {statusLabel(session.status)}</span>
                               </span>
                               <span className="text-xs font-medium text-[#617061]">{sessionCountsForSeason(session) ? "Counts" : "Side event"}</span>
                             </label>
