@@ -1374,6 +1374,19 @@ export default function Page() {
     profiles.forEach((ownerProfile) => {
       if (ownerProfile.team_name?.trim()) currentTeamNameByOwner.set(ownerProfile.id, ownerProfile.team_name.trim());
     });
+    const ownerByHistoricalTeamName = new Map<string, string>();
+    const ambiguousHistoricalTeamNames = new Set<string>();
+    seasonTeams.forEach((team) => {
+      if (!team.owner_user_id) return;
+      const historicalKey = normalizeName(team.name);
+      const existingOwner = ownerByHistoricalTeamName.get(historicalKey);
+      if (existingOwner && existingOwner !== team.owner_user_id) {
+        ambiguousHistoricalTeamNames.add(historicalKey);
+        ownerByHistoricalTeamName.delete(historicalKey);
+        return;
+      }
+      if (!ambiguousHistoricalTeamNames.has(historicalKey)) ownerByHistoricalTeamName.set(historicalKey, team.owner_user_id);
+    });
 
     const teamsBySession = new Map<string, DraftTeam[]>();
     seasonTeams.forEach((team) => {
@@ -1402,8 +1415,9 @@ export default function Page() {
             return pointsForPosition(position);
           });
         const total = [...playerScores].sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
-        const teamName = team.owner_user_id ? currentTeamNameByOwner.get(team.owner_user_id) ?? team.name : team.name;
-        const teamKey = team.owner_user_id ? `owner:${team.owner_user_id}` : `name:${normalizeName(team.name)}`;
+        const effectiveOwnerId = team.owner_user_id ?? ownerByHistoricalTeamName.get(normalizeName(team.name)) ?? null;
+        const teamName = effectiveOwnerId ? currentTeamNameByOwner.get(effectiveOwnerId) ?? team.name : team.name;
+        const teamKey = effectiveOwnerId ? `owner:${effectiveOwnerId}` : `name:${normalizeName(teamName)}`;
         return { teamKey, teamName, total };
       }).sort((a, b) => b.total - a.total);
 
@@ -1432,8 +1446,28 @@ export default function Page() {
       });
     });
 
+    const consolidated = new Map<string, SeasonTeamStat>();
+    aggregate.forEach((entry) => {
+      const key = normalizeName(entry.teamName);
+      const current = consolidated.get(key);
+      if (!current) {
+        consolidated.set(key, { ...entry });
+        return;
+      }
+      current.eventsPlayed += entry.eventsPlayed;
+      current.wins += entry.wins;
+      current.top3 += entry.top3;
+      current.seasonPoints += entry.seasonPoints;
+      current.bestFinish = current.bestFinish === null
+        ? entry.bestFinish
+        : entry.bestFinish === null
+          ? current.bestFinish
+          : Math.min(current.bestFinish, entry.bestFinish);
+      current.lastTotal = entry.lastTotal ?? current.lastTotal;
+    });
+
     setSeasonStats(
-      Array.from(aggregate.values()).sort((a, b) => {
+      Array.from(consolidated.values()).sort((a, b) => {
         if (b.seasonPoints !== a.seasonPoints) return b.seasonPoints - a.seasonPoints;
         return a.teamName.localeCompare(b.teamName);
       })
