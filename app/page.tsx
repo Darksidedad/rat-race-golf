@@ -42,6 +42,7 @@ type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: 
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
 type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
+type SeasonStatsView = "league" | "all";
 type EditingPick = {
   id: string;
   teamName: string;
@@ -515,6 +516,7 @@ export default function Page() {
   const [profileDraftTeam, setProfileDraftTeam] = useState("");
   const [seasonStats, setSeasonStats] = useState<SeasonTeamStat[]>([]);
   const [seasonStatsLoading, setSeasonStatsLoading] = useState(false);
+  const [seasonStatsView, setSeasonStatsView] = useState<SeasonStatsView>("league");
   const [statusMessage, setStatusMessage] = useState("Loading league data...");
   const [busy, setBusy] = useState("");
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
@@ -537,6 +539,11 @@ export default function Page() {
     const dateDifference = new Date(bDate).getTime() - new Date(aDate).getTime();
     return dateDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   }), [sessionEventDates, sessions]);
+  const completedSeasonSessions = useMemo(() => sessions.filter((session) =>
+    (seasonStatsView === "all" || sessionCountsForSeason(session))
+    && (session.status === "scored" || session.status === "finalized")
+    && Object.keys(session.current_positions ?? {}).length > 0
+  ), [seasonStatsView, sessions]);
   const currentLeagueInviteUrl = useMemo(() => {
     if (typeof window === "undefined" || !currentLeague?.slug) return "";
     const url = new URL(window.location.origin + window.location.pathname);
@@ -704,7 +711,7 @@ export default function Page() {
   useEffect(() => {
     if (activeRoomTab !== "season" || !sessions.length) return;
     void loadSeasonStats();
-  }, [activeRoomTab, sessions]);
+  }, [activeRoomTab, seasonStatsView, sessions]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -1331,7 +1338,7 @@ export default function Page() {
 
   async function loadSeasonStats() {
     const eligibleSessions = sessions.filter((session) =>
-      sessionCountsForSeason(session)
+      (seasonStatsView === "all" || sessionCountsForSeason(session))
       && (session.status === "scored" || session.status === "finalized")
       && Object.keys(session.current_positions ?? {}).length > 0
     );
@@ -1395,7 +1402,9 @@ export default function Page() {
           lastTotal: null,
         };
 
-        const finish = index + 1;
+        const finish = index === 0 || entry.total !== sessionLeaderboard[index - 1].total
+          ? index + 1
+          : sessionLeaderboard.findIndex((rankedEntry) => rankedEntry.total === entry.total) + 1;
         current.eventsPlayed += 1;
         current.seasonPoints += entry.total;
         current.lastTotal = entry.total;
@@ -3218,12 +3227,63 @@ export default function Page() {
 
                 {activeRoomTab === "season" ? (
                   <div className="grid gap-5">
+                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="m-0 font-[Georgia] text-xl">Season Stats</h3>
+                          <div className="mt-1 text-sm text-[#617061]">
+                            {seasonStatsView === "league" ? "Official standings from selected league tournaments." : "Comparison standings including every completed tournament and side event."}
+                          </div>
+                        </div>
+                        <div className="flex rounded-xl border border-[#1a5c3a]/20 bg-white p-1">
+                          <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${seasonStatsView === "league" ? "bg-[#1a5c3a] text-white" : "text-[#1a5c3a]"}`} onClick={() => setSeasonStatsView("league")}>League Season</button>
+                          <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${seasonStatsView === "all" ? "bg-[#1a5c3a] text-white" : "text-[#1a5c3a]"}`} onClick={() => setSeasonStatsView("all")}>All Tournaments</button>
+                        </div>
+                      </div>
+                      <div className="mb-4 flex flex-wrap gap-2">
+                        <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{completedSeasonSessions.length} completed events</span>
+                        <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
+                        {seasonStatsView === "league" ? <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{countedSeasonSessions.length} events selected</span> : null}
+                      </div>
+                      {seasonStatsLoading ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Loading season stats...</div> : !seasonStats.length ? (
+                        <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No completed tournament data is ready for season stats yet.</div>
+                      ) : (
+                        <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+                          <div className="min-w-0 overflow-hidden rounded-2xl border border-black/10 bg-white/85">
+                            <div className="grid grid-cols-[42px_minmax(100px,1fr)_70px_70px_64px] gap-2 border-b border-black/10 bg-[#f7f2e9] px-3 py-2 text-[10px] font-semibold uppercase text-[#617061]">
+                              <span>Rank</span><span>Team</span><span className="text-right">Points</span><span className="text-right">Avg</span><span className="text-right">Events</span>
+                            </div>
+                            {seasonStats.map((entry, index) => (
+                              <div key={entry.teamName} className={`grid grid-cols-[42px_minmax(100px,1fr)_70px_70px_64px] items-center gap-2 border-b border-black/5 px-3 py-3 text-sm last:border-0 ${index < 3 ? "bg-[#fffaf0]" : ""}`}>
+                                <strong className="text-[#617061]">#{index + 1}</strong>
+                                <span className="truncate font-semibold">{entry.teamName}</span>
+                                <strong className="text-right text-[#1a5c3a]">{entry.seasonPoints}</strong>
+                                <span className="text-right">{entry.eventsPlayed ? (entry.seasonPoints / entry.eventsPlayed).toFixed(1) : "0.0"}</span>
+                                <span className="text-right text-[#617061]">{entry.eventsPlayed}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="grid content-start gap-2">
+                            <h4 className="m-0 font-[Georgia] text-lg">Performance Leaders</h4>
+                            {seasonStats.slice(0, 5).map((entry, index) => (
+                              <div key={entry.teamName} className="grid grid-cols-[36px_minmax(0,1fr)_repeat(3,52px)] items-center gap-2 rounded-xl border border-black/10 bg-white/85 px-3 py-2 text-sm">
+                                <strong className="text-[#617061]">#{index + 1}</strong>
+                                <span className="truncate font-semibold">{entry.teamName}</span>
+                                <span className="text-center"><span className="block text-[9px] uppercase text-[#617061]">Wins</span>{entry.wins}</span>
+                                <span className="text-center"><span className="block text-[9px] uppercase text-[#617061]">Top 3</span>{entry.top3}</span>
+                                <span className="text-center"><span className="block text-[9px] uppercase text-[#617061]">Best</span>{entry.bestFinish ? `#${entry.bestFinish}` : "-"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
                     {canManageLeague ? (
                       <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <h3 className="m-0 font-[Georgia] text-xl">Season Tournament Schedule</h3>
-                            <div className="mt-1 text-sm text-[#617061]">Select the tournaments that contribute to season points. Side-event leaderboards remain available.</div>
+                            <div className="mt-1 text-sm text-[#617061]">Checked events count in the official League Season view. Side events remain included in All Tournaments.</div>
                           </div>
                           <span className={`rounded-full px-3 py-1 text-sm font-semibold ${countedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>
                             {countedSeasonSessions.length} / {SEASON_EVENT_TARGET} selected
@@ -3243,38 +3303,6 @@ export default function Page() {
                         </div>
                       </div>
                     ) : null}
-                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                      <div className="mb-4 flex items-center justify-between gap-3">
-                        <h3 className="m-0 font-[Georgia] text-xl">Season Stats</h3>
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{countedSeasonSessions.length} events selected</span>
-                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
-                        </div>
-                      </div>
-                      {seasonStatsLoading ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Loading season stats...</div> : !seasonStats.length ? (
-                        <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No completed tournament data is ready for season stats yet.</div>
-                      ) : (
-                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          {seasonStats.map((entry, index) => (
-                            <div key={entry.teamName} className={`grid gap-2 rounded-[1.6rem] p-4 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.10)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
-                              <div className="flex items-start justify-between gap-3">
-                                <div>
-                                  <div className="text-xs uppercase tracking-[0.18em] text-[#617061]">#{index + 1} YTD</div>
-                                  <strong className="text-lg">{entry.teamName}</strong>
-                                </div>
-                                <div className="rounded-full bg-[#1a5c3a] px-3 py-1 text-sm font-semibold text-white">{entry.seasonPoints} pts</div>
-                              </div>
-                              <div className="grid grid-cols-2 gap-2 text-sm">
-                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Events</div><div className="font-semibold">{entry.eventsPlayed}</div></div>
-                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Wins</div><div className="font-semibold">{entry.wins}</div></div>
-                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Top 3</div><div className="font-semibold">{entry.top3}</div></div>
-                                <div className="rounded-2xl bg-[#f4efe6] px-3 py-2"><div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Best Finish</div><div className="font-semibold">{entry.bestFinish ? `#${entry.bestFinish}` : "-"}</div></div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
                   </div>
                 ) : null}
               </div>
