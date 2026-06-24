@@ -216,6 +216,12 @@ function isNonScoringResult(total: string | null | undefined, thru: string | nul
   return totalValue === "CUT" || totalValue === "WD" || totalValue === "DQ" || thruValue === "CUT" || thruValue === "WD" || thruValue === "DQ";
 }
 
+function normalizeLegacyNonScoringResult(position: number | null, total: string | null, thru: string | null) {
+  if (position !== null || normalizeStoredThru(thru) !== "F") return { total, thru };
+  if (!total || !/^[+-]?\d+$|^E$/i.test(total.trim())) return { total, thru };
+  return { total: "CUT", thru: "CUT" };
+}
+
 function totalColorClass(total: string | null | undefined) {
   const value = String(total ?? "").trim().toUpperCase();
   if (!value) return "text-[#617061]";
@@ -762,8 +768,11 @@ export default function Page() {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
           const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
           const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          const displayTotal = parseStoredTotal(total);
-          const thru = parseStoredThru(total);
+          const storedTotal = parseStoredTotal(total);
+          const storedThru = parseStoredThru(total);
+          const normalizedResult = normalizeLegacyNonScoringResult(position, storedTotal, storedThru);
+          const displayTotal = normalizedResult.total;
+          const thru = normalizedResult.thru;
           const meta = parseStoredMeta(total);
             return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position), nonScoring: isNonScoringResult(displayTotal, thru) };
           });
