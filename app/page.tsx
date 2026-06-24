@@ -56,6 +56,12 @@ type SeasonTeamStat = {
   seasonPoints: number;
   bestFinish: number | null;
   lastTotal: number | null;
+  totalToPar: number;
+  toParScores: number;
+  golferSelections: Record<string, { name: string; count: number }>;
+  mostDraftedGolfer: string | null;
+  mostDraftedCount: number;
+  uniqueGolfers: number;
 };
 
 const ROUNDS = 4;
@@ -242,6 +248,17 @@ function parseStoredThru(total: string | null | undefined) {
   if (!total || !total.includes("||")) return null;
   const [, thru] = total.split("||");
   return normalizeStoredThru(thru);
+}
+
+function numericGolfScore(total: string | null | undefined) {
+  const value = String(total ?? "").trim().toUpperCase();
+  if (value === "E") return 0;
+  return /^[+-]?\d+$/.test(value) ? Number(value) : null;
+}
+
+function formatToPar(value: number) {
+  if (value === 0) return "E";
+  return value > 0 ? `+${value}` : String(value);
 }
 
 function normalizeStoredThru(thru: string | null | undefined) {
@@ -1408,17 +1425,36 @@ export default function Page() {
       const sessionTeams = getAssignedActiveTeams(teamsBySession.get(session.id) ?? []);
       const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
       const positions = session.current_positions ?? {};
+      const totals = session.current_totals ?? {};
 
         const sessionLeaderboard = sessionTeams.map((team) => {
           const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
             const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
-            return pointsForPosition(position);
+            const storedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+            return {
+              pick,
+              points: pointsForPosition(position),
+              toPar: numericGolfScore(parseStoredTotal(storedTotal)),
+            };
           });
-        const total = [...playerScores].sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
+        const countingPlayers = [...playerScores].sort((a, b) => b.points - a.points || a.pick.pick_number - b.pick.pick_number).slice(0, 3);
+        const total = countingPlayers.reduce((sum, player) => sum + player.points, 0);
+        const numericCountingScores = countingPlayers.map((player) => player.toPar).filter((score): score is number => score !== null);
+        const golferSelections = Object.fromEntries(playerScores.map((player) => [
+          normalizeName(player.pick.player_name),
+          { name: player.pick.player_name, count: 1 },
+        ]));
         const effectiveOwnerId = team.owner_user_id ?? ownerByHistoricalTeamName.get(normalizeName(team.name)) ?? null;
         const teamName = effectiveOwnerId ? currentTeamNameByOwner.get(effectiveOwnerId) ?? team.name : team.name;
         const teamKey = effectiveOwnerId ? `owner:${effectiveOwnerId}` : `name:${normalizeName(teamName)}`;
-        return { teamKey, teamName, total };
+        return {
+          teamKey,
+          teamName,
+          total,
+          totalToPar: numericCountingScores.reduce((sum, score) => sum + score, 0),
+          toParScores: numericCountingScores.length,
+          golferSelections,
+        };
       }).sort((a, b) => b.total - a.total);
 
       sessionLeaderboard.forEach((entry, index) => {
@@ -1430,6 +1466,12 @@ export default function Page() {
           seasonPoints: 0,
           bestFinish: null,
           lastTotal: null,
+          totalToPar: 0,
+          toParScores: 0,
+          golferSelections: {},
+          mostDraftedGolfer: null,
+          mostDraftedCount: 0,
+          uniqueGolfers: 0,
         };
 
         const finish = index === 0 || entry.total !== sessionLeaderboard[index - 1].total
@@ -1438,6 +1480,13 @@ export default function Page() {
         current.eventsPlayed += 1;
         current.seasonPoints += entry.total;
         current.lastTotal = entry.total;
+        current.totalToPar += entry.totalToPar;
+        current.toParScores += entry.toParScores;
+        Object.entries(entry.golferSelections).forEach(([golferKey, golfer]) => {
+          const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0 };
+          selection.count += golfer.count;
+          current.golferSelections[golferKey] = selection;
+        });
         current.bestFinish = current.bestFinish === null ? finish : Math.min(current.bestFinish, finish);
         if (finish === 1) current.wins += 1;
         if (finish <= 3) current.top3 += 1;
@@ -1458,6 +1507,13 @@ export default function Page() {
       current.wins += entry.wins;
       current.top3 += entry.top3;
       current.seasonPoints += entry.seasonPoints;
+      current.totalToPar += entry.totalToPar;
+      current.toParScores += entry.toParScores;
+      Object.entries(entry.golferSelections).forEach(([golferKey, golfer]) => {
+        const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0 };
+        selection.count += golfer.count;
+        current.golferSelections[golferKey] = selection;
+      });
       current.bestFinish = current.bestFinish === null
         ? entry.bestFinish
         : entry.bestFinish === null
@@ -1467,7 +1523,15 @@ export default function Page() {
     });
 
     setSeasonStats(
-      Array.from(consolidated.values()).sort((a, b) => {
+      Array.from(consolidated.values()).map((entry) => {
+        const selections = Object.values(entry.golferSelections).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        return {
+          ...entry,
+          mostDraftedGolfer: selections[0]?.name ?? null,
+          mostDraftedCount: selections[0]?.count ?? 0,
+          uniqueGolfers: selections.length,
+        };
+      }).sort((a, b) => {
         if (b.seasonPoints !== a.seasonPoints) return b.seasonPoints - a.seasonPoints;
         return a.teamName.localeCompare(b.teamName);
       })
@@ -3325,6 +3389,34 @@ export default function Page() {
                                 <span className="text-center"><span className="block text-[9px] uppercase text-[#617061]">Best</span>{entry.bestFinish ? `#${entry.bestFinish}` : "-"}</span>
                               </div>
                             ))}
+                          </div>
+                          <div className="grid gap-3 xl:col-span-2">
+                            <div>
+                              <h4 className="m-0 font-[Georgia] text-lg">Draft & Scoring Profiles</h4>
+                              <div className="mt-1 text-xs text-[#617061]">Team to par uses the three counting golfers from each event with a recorded final score.</div>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                              {seasonStats.map((entry) => (
+                                <div key={entry.teamName} className="grid gap-3 rounded-2xl border border-black/10 bg-white/85 p-4">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <strong className="truncate">{entry.teamName}</strong>
+                                    <span className={`shrink-0 font-semibold ${entry.totalToPar < 0 ? "text-[#9d2f2f]" : "text-[#1a5c3a]"}`}>{entry.toParScores ? formatToPar(entry.totalToPar) : "-"}</span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 text-sm">
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Most Drafted</span>
+                                      <span className="block truncate font-semibold">{entry.mostDraftedGolfer ?? "-"}</span>
+                                      <span className="text-xs text-[#617061]">{entry.mostDraftedCount ? `${entry.mostDraftedCount} selections` : "No picks"}</span>
+                                    </div>
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Draft Variety</span>
+                                      <span className="block font-semibold">{entry.uniqueGolfers} golfers</span>
+                                      <span className="text-xs text-[#617061]">{entry.eventsPlayed} events</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         </div>
                       )}
