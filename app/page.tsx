@@ -510,6 +510,7 @@ export default function Page() {
   const [picks, setPicks] = useState<DraftPick[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [sessionEventDates, setSessionEventDates] = useState<Record<string, string>>({});
+  const [expandedSessionYears, setExpandedSessionYears] = useState<number[]>([]);
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
   const [newDraftSeason, setNewDraftSeason] = useState(CURRENT_GOLF_SEASON);
@@ -561,6 +562,38 @@ export default function Page() {
     const dateDifference = new Date(bDate).getTime() - new Date(aDate).getTime();
     return dateDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   }), [sessionEventDates, sessions]);
+  const featuredSession = useMemo(() => {
+    if (!sortedSessions.length) return null;
+    const now = Date.now();
+    const withDates = sortedSessions
+      .map((session) => ({ session, date: new Date(sessionEventDates[session.id] ?? "").getTime() }))
+      .filter((entry) => Number.isFinite(entry.date));
+    const inProgress = withDates
+      .filter((entry) => entry.date <= now && now <= entry.date + 5 * 24 * 60 * 60 * 1000)
+      .sort((a, b) => b.date - a.date);
+    if (inProgress[0]) return inProgress[0].session;
+    const upcoming = withDates
+      .filter((entry) => entry.date > now && entry.session.status !== "finalized")
+      .sort((a, b) => a.date - b.date);
+    if (upcoming[0]) return upcoming[0].session;
+    const active = withDates
+      .filter((entry) => entry.session.status !== "finalized")
+      .sort((a, b) => b.date - a.date);
+    return active[0]?.session ?? sortedSessions[0];
+  }, [sessionEventDates, sortedSessions]);
+  const archivedSessionsByYear = useMemo(() => {
+    const groups = new Map<number, DraftSession[]>();
+    sortedSessions.forEach((session) => {
+      if (session.id === featuredSession?.id) return;
+      const eventDate = sessionEventDates[session.id];
+      const dateYear = eventDate ? new Date(eventDate).getUTCFullYear() : null;
+      const year = dateYear && Number.isFinite(dateYear) ? dateYear : session.event_season ?? CURRENT_GOLF_SEASON;
+      const existing = groups.get(year) ?? [];
+      existing.push(session);
+      groups.set(year, existing);
+    });
+    return Array.from(groups.entries()).sort(([a], [b]) => b - a);
+  }, [featuredSession?.id, sessionEventDates, sortedSessions]);
   const completedSeasonSessions = useMemo(() => sessions.filter((session) =>
     (seasonStatsView === "all" || sessionCountsForSeason(session))
     && (session.status === "scored" || session.status === "finalized")
@@ -654,8 +687,8 @@ export default function Page() {
     void loadSessions();
   }, [authChecked, user, currentLeagueId]);
   useEffect(() => {
-    if (!selectedSessionId && sortedSessions[0]?.id) setSelectedSessionId(sortedSessions[0].id);
-  }, [selectedSessionId, sortedSessions]);
+    if (!selectedSessionId && featuredSession?.id) setSelectedSessionId(featuredSession.id);
+  }, [featuredSession?.id, selectedSessionId]);
 
   useEffect(() => {
     if (!sessions.length) {
@@ -2815,21 +2848,70 @@ export default function Page() {
               </div>
             )}
               <div className="mt-5 grid gap-3">
-                {!sortedSessions.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div> : sortedSessions.map((session) => (
-                <div key={session.id} className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-3 ${selectedSessionId === session.id ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/80"}`}>
-                  <button className="min-w-0 text-left" onClick={() => setSelectedSessionId(session.id)}>
-                      <div className="flex items-center justify-between gap-3">
-                        <strong className="truncate">{session.name}</strong>
-                        <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
-                        <span>{formatTournamentDate(sessionEventDates[session.id], session.event_season)}</span>
-                        <span>{sessionCountsForSeason(session) ? "Season event" : "Side event"}</span>
-                      </div>
-                    </button>
-                  {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2.5 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
-                </div>
-              ))}
+                {!featuredSession ? (
+                  <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No saved tournament sessions yet.</div>
+                ) : (
+                  <>
+                    <div className="text-[10px] font-semibold uppercase text-[#617061]">Current Tournament</div>
+                    <div className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border-2 px-3 py-3 ${selectedSessionId === featuredSession.id ? "border-[#1a5c3a] bg-[#d9eadf]" : "border-[#1a5c3a]/45 bg-[#edf6ef]"}`}>
+                      <button className="min-w-0 text-left" onClick={() => setSelectedSessionId(featuredSession.id)}>
+                        <div className="flex items-center justify-between gap-3">
+                          <strong className="truncate">{featuredSession.name}</strong>
+                          <span className="text-xs font-medium text-[#1a5c3a]">{statusLabel(featuredSession.status)}</span>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
+                          <span>{formatTournamentDate(sessionEventDates[featuredSession.id], featuredSession.event_season)}</span>
+                          <span className="font-semibold text-[#1a5c3a]">{sessionCountsForSeason(featuredSession) ? "Season event" : "Side event"}</span>
+                        </div>
+                      </button>
+                      {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2.5 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(featuredSession)}>Delete</button> : null}
+                    </div>
+
+                    <div className="mt-1 text-[10px] font-semibold uppercase text-[#617061]">Tournament Archive</div>
+                    {archivedSessionsByYear.map(([year, yearSessions]) => {
+                      const expanded = expandedSessionYears.includes(year);
+                      const seasonEventCount = yearSessions.filter(sessionCountsForSeason).length;
+                      return (
+                        <div key={year} className="overflow-hidden rounded-2xl border border-black/10 bg-white/65">
+                          <button
+                            className="grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 text-left"
+                            aria-expanded={expanded}
+                            onClick={() => setExpandedSessionYears((current) => current.includes(year) ? current.filter((entry) => entry !== year) : [...current, year])}
+                          >
+                            <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#f2eadf] font-semibold text-[#1a5c3a]" aria-hidden="true">{expanded ? "−" : "+"}</span>
+                            <span>
+                              <strong className="block">{year}</strong>
+                              <span className="block text-[11px] text-[#617061]">{yearSessions.length} tournaments</span>
+                            </span>
+                            <span className="text-right text-[10px] font-semibold uppercase text-[#617061]">{seasonEventCount} season</span>
+                          </button>
+                          {expanded ? (
+                            <div className="grid gap-2 border-t border-black/10 bg-[#f7f2e9]/55 p-2">
+                              {yearSessions.map((session) => {
+                                const seasonEvent = sessionCountsForSeason(session);
+                                return (
+                                  <div key={session.id} className={`grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border border-l-4 px-2.5 py-2.5 ${selectedSessionId === session.id ? "border-[#1a5c3a] bg-[#e0eee4]" : seasonEvent ? "border-black/10 border-l-[#1a5c3a] bg-white" : "border-black/10 border-l-[#b6aa98] bg-[#f4efe6]"}`}>
+                                    <button className="min-w-0 text-left" onClick={() => setSelectedSessionId(session.id)}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <strong className="truncate text-sm">{session.name}</strong>
+                                        <span className="shrink-0 text-[10px] text-[#617061]">{statusLabel(session.status)}</span>
+                                      </div>
+                                      <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-[#617061]">
+                                        <span>{formatTournamentDate(sessionEventDates[session.id], session.event_season)}</span>
+                                        <span className={seasonEvent ? "font-semibold text-[#1a5c3a]" : "font-semibold text-[#7b6d5b]"}>{seasonEvent ? "Season event" : "Side event"}</span>
+                                      </div>
+                                    </button>
+                                    {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2 py-1 text-[10px] text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
             </div>
         </section>
 
