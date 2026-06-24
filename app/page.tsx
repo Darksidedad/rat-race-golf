@@ -1,6 +1,6 @@
 "use client";
 
-import type { KeyboardEvent } from "react";
+import type { DragEvent, KeyboardEvent } from "react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
@@ -470,6 +470,8 @@ export default function Page() {
   const [newSessionEventId, setNewSessionEventId] = useState("");
   const [newDraftModalOpen, setNewDraftModalOpen] = useState(false);
   const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
+  const [draggedNewDraftTeam, setDraggedNewDraftTeam] = useState("");
+  const [dragOverNewDraftTeam, setDragOverNewDraftTeam] = useState("");
   const [newLeagueName, setNewLeagueName] = useState("");
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
   const [pendingLeagueSlug, setPendingLeagueSlug] = useState("");
@@ -1763,23 +1765,59 @@ export default function Page() {
   function resetNewDraftForm() {
     setNewDraftTeams(DEFAULT_NEW_DRAFT_TEAMS);
     setNewSessionCountsForSeason(true);
+    setDraggedNewDraftTeam("");
+    setDragOverNewDraftTeam("");
     if (events[0]?.id) setNewSessionEventId(events[0].id);
   }
 
   function toggleNewDraftTeam(teamName: string) {
-    setNewDraftTeams((current) => current.map((team) => team.name === teamName ? { ...team, selected: !team.selected } : team));
+    setNewDraftTeams((current) => {
+      const team = current.find((entry) => entry.name === teamName);
+      if (!team) return current;
+      const remaining = current.filter((entry) => entry.name !== teamName);
+      const selected = remaining.filter((entry) => entry.selected);
+      const unselected = remaining.filter((entry) => !entry.selected);
+      const toggledTeam = { ...team, selected: !team.selected };
+      return toggledTeam.selected ? [...selected, toggledTeam, ...unselected] : [...selected, ...unselected, toggledTeam];
+    });
   }
 
-  function moveNewDraftTeam(teamName: string, direction: "up" | "down") {
+  function moveNewDraftTeam(draggedTeamName: string, targetTeamName: string) {
+    if (!draggedTeamName || draggedTeamName === targetTeamName) return;
     setNewDraftTeams((current) => {
-      const index = current.findIndex((team) => team.name === teamName);
-      if (index < 0) return current;
-      const targetIndex = direction === "up" ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= current.length) return current;
+      const draggedIndex = current.findIndex((team) => team.name === draggedTeamName);
+      const targetIndex = current.findIndex((team) => team.name === targetTeamName);
+      if (draggedIndex < 0 || targetIndex < 0) return current;
       const next = [...current];
-      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      const [draggedTeam] = next.splice(draggedIndex, 1);
+      next.splice(targetIndex, 0, draggedTeam);
       return next;
     });
+  }
+
+  function startNewDraftTeamDrag(event: DragEvent<HTMLDivElement>, teamName: string) {
+    if (event.target instanceof HTMLElement && event.target.closest("input, label")) {
+      event.preventDefault();
+      return;
+    }
+    setDraggedNewDraftTeam(teamName);
+    setDragOverNewDraftTeam(teamName);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", teamName);
+  }
+
+  function dragNewDraftTeamOver(event: DragEvent<HTMLDivElement>, targetTeamName: string, targetSelected: boolean) {
+    if (!targetSelected) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (!draggedNewDraftTeam || draggedNewDraftTeam === targetTeamName || dragOverNewDraftTeam === targetTeamName) return;
+    setDragOverNewDraftTeam(targetTeamName);
+    moveNewDraftTeam(draggedNewDraftTeam, targetTeamName);
+  }
+
+  function finishNewDraftTeamDrag() {
+    setDraggedNewDraftTeam("");
+    setDragOverNewDraftTeam("");
   }
 
   function randomizeNewDraftOrder() {
@@ -2456,23 +2494,39 @@ export default function Page() {
                 <div className="relative z-0 grid min-w-0 gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="m-0 font-[Georgia] text-xl">Teams Playing</h3>
-                    <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Drag-free order controls</span>
+                    <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Draft order</span>
                   </div>
                   <div className="grid max-h-[520px] gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2">
-                    {newDraftTeams.map((team, index) => {
+                    {newDraftTeams.map((team) => {
                       const selectedTeams = newDraftTeams.filter((entry) => entry.selected);
                       const selectedIndex = team.selected ? selectedTeams.findIndex((entry) => entry.name === team.name) : -1;
                       return (
-                        <div key={team.name} className={`grid gap-3 rounded-2xl border px-3 py-2.5 sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center ${team.selected ? "border-[#1a5c3a]/35 bg-white" : "border-black/10 bg-white/60 text-[#617061]"}`}>
-                          <label className="flex items-center gap-2 text-sm font-medium">
-                            <input type="checkbox" checked={team.selected} onChange={() => toggleNewDraftTeam(team.name)} />
+                        <div
+                          key={team.name}
+                          draggable={team.selected}
+                          onDragStart={(event) => startNewDraftTeamDrag(event, team.name)}
+                          onDragOver={(event) => dragNewDraftTeamOver(event, team.name, team.selected)}
+                          onDrop={(event) => {
+                            event.preventDefault();
+                            finishNewDraftTeamDrag();
+                          }}
+                          onDragEnd={finishNewDraftTeamDrag}
+                          className={`grid select-none gap-3 rounded-2xl border px-3 py-2.5 transition sm:grid-cols-[auto_auto_minmax(0,1fr)] sm:items-center ${team.selected ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${
+                            draggedNewDraftTeam === team.name
+                              ? "border-[#1a5c3a] bg-[#d9eadf] opacity-55"
+                              : dragOverNewDraftTeam === team.name
+                                ? "border-[#1a5c3a] bg-[#edf6ef] shadow-[0_8px_20px_rgba(26,92,58,0.14)]"
+                                : team.selected
+                                  ? "border-[#1a5c3a]/35 bg-white"
+                                  : "border-black/10 bg-white/60 text-[#617061]"
+                          }`}
+                        >
+                          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-black/10 bg-[#f7f2e9] text-base font-bold text-[#617061]" title={`Move ${team.name}`} aria-hidden="true">::</span>
+                          <label className="flex items-center gap-2 text-sm font-medium" onPointerDown={(event) => event.stopPropagation()}>
+                            <input draggable={false} type="checkbox" checked={team.selected} onChange={() => toggleNewDraftTeam(team.name)} />
                             {team.selected ? `#${selectedIndex + 1}` : "Out"}
                           </label>
                           <div className="min-w-0 font-semibold">{team.name}</div>
-                          <div className="flex gap-2">
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-sm text-[#1a5c3a] disabled:opacity-40" disabled={index === 0} onClick={() => moveNewDraftTeam(team.name, "up")}>Up</button>
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1 text-sm text-[#1a5c3a] disabled:opacity-40" disabled={index === newDraftTeams.length - 1} onClick={() => moveNewDraftTeam(team.name, "down")}>Down</button>
-                          </div>
                         </div>
                       );
                     })}
