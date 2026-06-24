@@ -383,6 +383,15 @@ function normalizeGolfScore(raw: string | null | undefined) {
 }
 
 function fetchableScore(competitor: EspnCompetitor) {
+  const completedRegulationRounds = (competitor.linescores ?? [])
+    .filter((round) => Array.isArray(round.linescores) && round.linescores.length >= 18)
+    .slice(0, 4);
+  if (completedRegulationRounds.length === 4) {
+    const regulationScores = completedRegulationRounds.map((round) => normalizeGolfScore(round.displayValue));
+    if (regulationScores.every((score): score is number => score !== null)) {
+      return regulationScores.reduce((sum, score) => sum + score, 0);
+    }
+  }
   return normalizeGolfScore(competitor.score) ?? normalizeGolfScore(competitor.linescores?.[0]?.displayValue ?? null);
 }
 
@@ -504,6 +513,12 @@ function displayGolfScore(raw: string | null | undefined) {
   return text;
 }
 
+function displayNormalizedScore(score: number | null) {
+  if (score === null) return null;
+  if (score === 0) return "E";
+  return score > 0 ? `+${score}` : String(score);
+}
+
 function teeTimeFromRound(round: NonNullable<EspnCompetitor["linescores"]>[number]) {
   const raw = round.statistics?.categories?.[0]?.stats?.[6]?.displayValue?.trim();
   if (!raw) return null;
@@ -596,10 +611,11 @@ function buildLeaderboard(competitors: EspnCompetitor[], eventCompleted = false)
   const rankedPlayers = competitors
     .map((competitor, sourceIndex) => {
       const status = nonScoringStatus(competitor, maxCompletedRounds, eventCompleted);
+      const score = status ? null : fetchableScore(competitor);
       return {
         name: competitorName(competitor),
-        score: status ? null : fetchableScore(competitor),
-        total: status ?? displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
+        score,
+        total: status ?? displayNormalizedScore(score) ?? displayGolfScore(competitor.score) ?? displayGolfScore(competitor.linescores?.[0]?.displayValue ?? null),
         thru: status ?? competitorThru(competitor),
         completedRounds: completedRoundCount(competitor),
         sourceIndex,

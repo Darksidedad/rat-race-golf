@@ -310,6 +310,42 @@ function parseStoredMeta(total: string | null | undefined) {
   return meta || null;
 }
 
+function normalizeStoredPlayoffPositions(
+  positions: Record<string, number | null>,
+  totals: Record<string, string | null>
+) {
+  const playoffEntries = Object.entries(totals)
+    .map(([playerKey, total]) => ({ playerKey, meta: parseStoredMeta(total) }))
+    .filter((entry) => entry.meta?.startsWith("PLAYOFF:"))
+    .map((entry) => {
+      const [, rank] = entry.meta!.split(":");
+      return { playerKey: entry.playerKey, rank: Number(rank) };
+    })
+    .filter((entry) => Number.isFinite(entry.rank) && entry.rank > 0);
+  if (playoffEntries.length < 2) return positions;
+
+  const playoffKeys = new Set(playoffEntries.map((entry) => entry.playerKey));
+  const rankedScores = Object.entries(totals)
+    .filter(([playerKey]) => !playoffKeys.has(playerKey))
+    .map(([playerKey, total]) => ({ playerKey, score: numericGolfScore(parseStoredTotal(total)) }))
+    .filter((entry): entry is { playerKey: string; score: number } => entry.score !== null)
+    .sort((a, b) => a.score - b.score);
+  const corrected = { ...positions };
+  playoffEntries.forEach((entry) => {
+    corrected[entry.playerKey] = entry.rank;
+  });
+  let lastScore: number | null = null;
+  let lastPosition = playoffEntries.length;
+  rankedScores.forEach((entry, index) => {
+    if (lastScore === null || entry.score !== lastScore) {
+      lastPosition = playoffEntries.length + index + 1;
+      lastScore = entry.score;
+    }
+    corrected[entry.playerKey] = lastPosition;
+  });
+  return corrected;
+}
+
 function playoffLabel(meta: string | null | undefined) {
   if (!meta?.startsWith("PLAYOFF:")) return null;
   const [, rank, total] = meta.split(":");
@@ -853,8 +889,9 @@ export default function Page() {
       });
   }, [assignedTeams, currentMembership?.claimed_team_name, picks, profile?.team_name, user?.id]);
   const leaderboard = useMemo(() => {
-    const positions = currentSession?.current_positions ?? {};
+    const storedPositions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
+    const positions = normalizeStoredPlayoffPositions(storedPositions, totals);
         return assignedTeams.map((team) => {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
           const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
@@ -1491,7 +1528,7 @@ export default function Page() {
     eligibleSessions.forEach((session) => {
       const sessionTeams = getAssignedActiveTeams(teamsBySession.get(session.id) ?? []);
       const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
-      const positions = session.current_positions ?? {};
+      const positions = normalizeStoredPlayoffPositions(session.current_positions ?? {}, session.current_totals ?? {});
       const totals = session.current_totals ?? {};
 
         const sessionLeaderboard = sessionTeams.map((team) => {
