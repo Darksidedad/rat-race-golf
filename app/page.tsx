@@ -72,6 +72,7 @@ type SeasonTeamStat = {
 const ROUNDS = 4;
 const SEASON_EVENT_TARGET = 10;
 const SEASON_EXCLUDED_MARKER = "# RRG_SIDE_EVENT";
+const EVENT_SEASON_MARKER_PREFIX = "# RRG_EVENT_SEASON:";
 const CURRENT_GOLF_SEASON = new Date().getFullYear();
 const HISTORICAL_SEASONS = Array.from({ length: 8 }, (_, index) => CURRENT_GOLF_SEASON - index);
 const DEFAULT_TEAM_NAMES = ["Ryan","Morris","Russ","Swany","Capps","Seth","Jay","Teron","Jesse","Drew","Jimmy","Jones"];
@@ -144,8 +145,35 @@ function sessionCountsForSeason(session: DraftSession) {
     && !String(session.manual_leaderboard_input ?? "").split(/\r?\n/).some((line) => line.trim() === SEASON_EXCLUDED_MARKER);
 }
 
+function storedEventSeason(input: string | null | undefined) {
+  const line = String(input ?? "").split(/\r?\n/).find((entry) => entry.trim().startsWith(EVENT_SEASON_MARKER_PREFIX));
+  const season = Number(line?.trim().slice(EVENT_SEASON_MARKER_PREFIX.length));
+  return Number.isInteger(season) && season >= 2000 ? season : null;
+}
+
+function sessionEventSeason(session: DraftSession) {
+  return storedEventSeason(session.manual_leaderboard_input) ?? session.event_season ?? CURRENT_GOLF_SEASON;
+}
+
+function stripSessionMetadata(input: string | null | undefined) {
+  return String(input ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() !== SEASON_EXCLUDED_MARKER && !line.trim().startsWith(EVENT_SEASON_MARKER_PREFIX))
+    .join("\n")
+    .trim();
+}
+
 function manualLeaderboardWithSeasonSetting(input: string | null | undefined, countsForSeason: boolean) {
-  const lines = String(input ?? "").split(/\r?\n/).filter((line) => line.trim() !== SEASON_EXCLUDED_MARKER);
+  const eventSeason = storedEventSeason(input);
+  const lines = stripSessionMetadata(input).split(/\r?\n/).filter(Boolean);
+  if (eventSeason) lines.unshift(`${EVENT_SEASON_MARKER_PREFIX}${eventSeason}`);
+  if (!countsForSeason) lines.unshift(SEASON_EXCLUDED_MARKER);
+  return lines.join("\n").trim();
+}
+
+function manualLeaderboardWithEventSeason(input: string | null | undefined, season: number, countsForSeason: boolean) {
+  const lines = stripSessionMetadata(input).split(/\r?\n/).filter(Boolean);
+  lines.unshift(`${EVENT_SEASON_MARKER_PREFIX}${season}`);
   if (!countsForSeason) lines.unshift(SEASON_EXCLUDED_MARKER);
   return lines.join("\n").trim();
 }
@@ -510,6 +538,7 @@ export default function Page() {
   const [picks, setPicks] = useState<DraftPick[]>([]);
   const [events, setEvents] = useState<EventOption[]>([]);
   const [sessionEventDates, setSessionEventDates] = useState<Record<string, string>>({});
+  const [resolvedSessionSeasons, setResolvedSessionSeasons] = useState<Record<string, number>>({});
   const [expandedSessionYears, setExpandedSessionYears] = useState<number[]>([]);
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
@@ -557,11 +586,11 @@ export default function Page() {
     [sessions]
   );
   const sortedSessions = useMemo(() => [...sessions].sort((a, b) => {
-    const aDate = sessionEventDates[a.id] ?? `${a.event_season ?? 0}-01-01`;
-    const bDate = sessionEventDates[b.id] ?? `${b.event_season ?? 0}-01-01`;
+    const aDate = sessionEventDates[a.id] ?? `${resolvedSessionSeasons[a.id] ?? sessionEventSeason(a)}-01-01`;
+    const bDate = sessionEventDates[b.id] ?? `${resolvedSessionSeasons[b.id] ?? sessionEventSeason(b)}-01-01`;
     const dateDifference = new Date(bDate).getTime() - new Date(aDate).getTime();
     return dateDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-  }), [sessionEventDates, sessions]);
+  }), [resolvedSessionSeasons, sessionEventDates, sessions]);
   const featuredSession = useMemo(() => {
     if (!sortedSessions.length) return null;
     const now = Date.now();
@@ -587,13 +616,13 @@ export default function Page() {
       if (session.id === featuredSession?.id) return;
       const eventDate = sessionEventDates[session.id];
       const dateYear = eventDate ? new Date(eventDate).getUTCFullYear() : null;
-      const year = dateYear && Number.isFinite(dateYear) ? dateYear : session.event_season ?? CURRENT_GOLF_SEASON;
+      const year = dateYear && Number.isFinite(dateYear) ? dateYear : resolvedSessionSeasons[session.id] ?? sessionEventSeason(session);
       const existing = groups.get(year) ?? [];
       existing.push(session);
       groups.set(year, existing);
     });
     return Array.from(groups.entries()).sort(([a], [b]) => b - a);
-  }, [featuredSession?.id, sessionEventDates, sortedSessions]);
+  }, [featuredSession?.id, resolvedSessionSeasons, sessionEventDates, sortedSessions]);
   const completedSeasonSessions = useMemo(() => sessions.filter((session) =>
     (seasonStatsView === "all" || sessionCountsForSeason(session))
     && (session.status === "scored" || session.status === "finalized")
@@ -635,7 +664,7 @@ export default function Page() {
 
   useEffect(() => {
     loadCurrentSessionEventDetails();
-  }, [currentSession?.event_id, currentSession?.event_season, currentSession?.event_tour]);
+  }, [currentSession?.event_id, currentSession?.event_season, currentSession?.event_tour, currentSession?.manual_leaderboard_input, resolvedSessionSeasons]);
 
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
@@ -713,14 +742,14 @@ export default function Page() {
 
   useEffect(() => {
     setPlayerPoolDraft(currentSession?.player_input ?? "");
-    setManualLeaderboardDraft(manualLeaderboardWithSeasonSetting(currentSession?.manual_leaderboard_input, true));
+    setManualLeaderboardDraft(stripSessionMetadata(currentSession?.manual_leaderboard_input));
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
     if (!currentSession) return;
     setNewDraftTour(currentSession.event_tour ?? "pga");
-    setNewDraftSeason(currentSession.event_season ?? CURRENT_GOLF_SEASON);
-  }, [currentSession?.id, currentSession?.event_season, currentSession?.event_tour]);
+    setNewDraftSeason(resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
+  }, [currentSession?.id, currentSession?.event_season, currentSession?.event_tour, currentSession?.manual_leaderboard_input, resolvedSessionSeasons]);
 
   useEffect(() => {
     if (currentSession?.odds_snapshot && Object.keys(currentSession.odds_snapshot).length) {
@@ -733,8 +762,8 @@ export default function Page() {
       setOddsSource("");
       return;
     }
-    loadOdds(currentSession.event_name, currentSession.event_season ?? CURRENT_GOLF_SEASON);
-  }, [currentSession?.event_name, currentSession?.event_season, currentSession?.odds_snapshot, currentSession?.odds_source]);
+    loadOdds(currentSession.event_name, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
+  }, [currentSession?.event_name, currentSession?.event_season, currentSession?.manual_leaderboard_input, currentSession?.odds_snapshot, currentSession?.odds_source, resolvedSessionSeasons]);
 
   useEffect(() => {
     if (!profile || isLeagueAdmin) return;
@@ -885,7 +914,7 @@ export default function Page() {
 
   useEffect(() => {
     autoImportMissingPlayerPool();
-  }, [canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.player_input]);
+  }, [canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.manual_leaderboard_input, currentSession?.player_input, resolvedSessionSeasons]);
 
   useEffect(() => {
     autoClaimMatchingDraftTeam();
@@ -893,7 +922,7 @@ export default function Page() {
 
   useEffect(() => {
     autoRefreshFieldBeforeDraft();
-  }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length]);
+  }, [activeRoomTab, canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.manual_leaderboard_input, currentSession?.field_refreshed_at, currentSession?.odds_refreshed_at, picks.length, resolvedSessionSeasons]);
 
   useEffect(() => {
     if (activeRoomTab !== "draft" || !draftPickTape.length) return;
@@ -1737,34 +1766,32 @@ export default function Page() {
   }
 
   async function loadSessionEventDates(sessionList: DraftSession[]) {
-    const groups = new Map<string, { tour: string; season: number; sessions: DraftSession[] }>();
-    sessionList.forEach((session) => {
-      if (!session.event_id) return;
-      const tour = session.event_tour ?? "pga";
-      const season = session.event_season ?? CURRENT_GOLF_SEASON;
-      const key = `${tour}:${season}`;
-      const group = groups.get(key) ?? { tour, season, sessions: [] };
-      group.sessions.push(session);
-      groups.set(key, group);
-    });
-
-    const dateEntries = await Promise.all(Array.from(groups.values()).map(async (group) => {
+    const tours = Array.from(new Set(sessionList.map((session) => session.event_tour ?? "pga")));
+    const seasons = Array.from(new Set([
+      ...HISTORICAL_SEASONS,
+      ...sessionList.map(sessionEventSeason),
+    ]));
+    const eventCollections = await Promise.all(tours.flatMap((tour) => seasons.map(async (season) => {
       try {
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(group.tour)}&season=${group.season}`);
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tour)}&season=${season}`);
         const payload: EspnEventsResponse = await response.json();
-        if (!payload.ok || !payload.events) return [];
-        const eventsById = new Map(payload.events.map((event) => [event.id, event]));
-        return group.sessions.flatMap((session) => {
-          const startDate = session.event_id ? eventsById.get(session.event_id)?.startDate : undefined;
-          return startDate ? [[session.id, startDate] as const] : [];
-        });
+        return payload.ok && payload.events ? payload.events : [];
       } catch (error) {
         console.error(error);
         return [];
       }
-    }));
-
-    setSessionEventDates(Object.fromEntries(dateEntries.flat()));
+    })));
+    const eventsById = new Map(eventCollections.flat().map((event) => [event.id, event]));
+    const dateEntries: Array<readonly [string, string]> = [];
+    const seasonEntries: Array<readonly [string, number]> = [];
+    sessionList.forEach((session) => {
+      if (!session.event_id) return;
+      const event = eventsById.get(session.event_id);
+      if (event?.startDate) dateEntries.push([session.id, event.startDate]);
+      if (event?.season) seasonEntries.push([session.id, event.season]);
+    });
+    setSessionEventDates(Object.fromEntries(dateEntries));
+    setResolvedSessionSeasons(Object.fromEntries(seasonEntries));
   }
 
   async function loadSession(sessionId: string, setLoading = true) {
@@ -1816,7 +1843,7 @@ export default function Page() {
     try {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
-        const seasonQuery = currentSession.event_season ?? CURRENT_GOLF_SEASON;
+        const seasonQuery = resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession);
         const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`);
         const payload: EspnEventsResponse = await response.json();
         if (!payload.ok || !payload.events) continue;
@@ -2186,7 +2213,7 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
     }
-    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
+    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
     let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
     if (sessionInsert.error && (
       isMissingColumnError(sessionInsert.error, "event_tour")
@@ -2306,7 +2333,7 @@ export default function Page() {
     if (picks.length) return setStatusMessage("The field and odds are locked after the first pick. Reopen this only by undoing picks first.");
     setBusy("Importing field...");
     try {
-        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
+        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
         await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN after cleaning duplicates, team rows, and invalid rows.`);
       } catch (error) {
         console.error(error);
@@ -2318,6 +2345,7 @@ export default function Page() {
 
   async function autoImportMissingPlayerPool() {
     if (!canManageLeague || !currentSession?.id || !currentSession.event_id) return;
+    if (!storedEventSeason(currentSession.manual_leaderboard_input) && !resolvedSessionSeasons[currentSession.id]) return;
     if (picks.length) return;
     if (currentSession.player_input?.trim()) return;
     if (autoFieldImportAttempts[currentSession.id]) return;
@@ -2325,7 +2353,7 @@ export default function Page() {
     setAutoFieldImportAttempts((current) => ({ ...current, [currentSession.id]: true }));
     setBusy("Importing ESPN field...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
       await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Auto-imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN.`);
     } catch (error) {
       console.error(error);
@@ -2362,6 +2390,7 @@ export default function Page() {
 
   async function autoRefreshFieldBeforeDraft() {
     if (!canManageLeague || activeRoomTab !== "draft" || !currentSession?.id || !currentSession.event_id) return;
+    if (!storedEventSeason(currentSession.manual_leaderboard_input) && !resolvedSessionSeasons[currentSession.id]) return;
     if (picks.length || autoFieldRefreshAttempts[currentSession.id]) return;
 
     const fieldRefreshedAt = currentSession.field_refreshed_at ? new Date(currentSession.field_refreshed_at).getTime() : 0;
@@ -2374,7 +2403,7 @@ export default function Page() {
     setAutoFieldRefreshAttempts((current) => ({ ...current, [currentSession.id]: true }));
     setBusy("Refreshing field and odds...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
       await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Refreshed ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} before the draft started.`);
     } catch (error) {
       console.error(error);
@@ -2389,7 +2418,7 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${currentSession.event_season ?? CURRENT_GOLF_SEASON}`);
+      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
       const payload: EspnLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
@@ -2470,7 +2499,7 @@ export default function Page() {
       setStatusMessage("Paste at least one leaderboard line before applying manual scores.");
       return;
     }
-    await updateSession({ manual_leaderboard_input: manualLeaderboardWithSeasonSetting(manualLeaderboardDraft, sessionCountsForSeason(currentSession)), current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
+    await updateSession({ manual_leaderboard_input: manualLeaderboardWithEventSeason(manualLeaderboardDraft, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession), sessionCountsForSeason(currentSession)), current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
     setBusy("");
   }
 
@@ -2778,7 +2807,7 @@ export default function Page() {
                     <h3 className="m-0 font-[Georgia] text-xl">Teams Playing</h3>
                     <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Draft order</span>
                   </div>
-                  <div className="grid max-h-[520px] gap-2 overflow-auto rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2">
+                  <div className="grid gap-2 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 md:grid-cols-2">
                     {newDraftTeams.map((team) => {
                       const selectedTeams = newDraftTeams.filter((entry) => entry.selected);
                       const selectedIndex = team.selected ? selectedTeams.findIndex((entry) => entry.name === team.name) : -1;
@@ -2860,7 +2889,7 @@ export default function Page() {
                           <span className="text-xs font-medium text-[#1a5c3a]">{statusLabel(featuredSession.status)}</span>
                         </div>
                         <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
-                          <span>{formatTournamentDate(sessionEventDates[featuredSession.id], featuredSession.event_season)}</span>
+                          <span>{formatTournamentDate(sessionEventDates[featuredSession.id], resolvedSessionSeasons[featuredSession.id] ?? sessionEventSeason(featuredSession))}</span>
                           <span className="font-semibold text-[#1a5c3a]">{sessionCountsForSeason(featuredSession) ? "Season event" : "Side event"}</span>
                         </div>
                       </button>
@@ -2897,7 +2926,7 @@ export default function Page() {
                                         <span className="shrink-0 text-[10px] text-[#617061]">{statusLabel(session.status)}</span>
                                       </div>
                                       <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-[#617061]">
-                                        <span>{formatTournamentDate(sessionEventDates[session.id], session.event_season)}</span>
+                                        <span>{formatTournamentDate(sessionEventDates[session.id], resolvedSessionSeasons[session.id] ?? sessionEventSeason(session))}</span>
                                         <span className={seasonEvent ? "font-semibold text-[#1a5c3a]" : "font-semibold text-[#7b6d5b]"}>{seasonEvent ? "Season event" : "Side event"}</span>
                                       </div>
                                     </button>
@@ -2985,12 +3014,12 @@ export default function Page() {
                           <span className="font-medium text-[#1f2a1d]">Tournament Season</span>
                           <select
                             className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3"
-                            value={currentSession.event_season ?? CURRENT_GOLF_SEASON}
+                            value={resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}
                             onChange={(event) => {
                               const season = Number(event.target.value);
                               setNewDraftSeason(season);
                               void updateSession(
-                                { event_season: season, event_id: null, event_name: null },
+                                { event_season: season, event_id: null, event_name: null, manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)) },
                                 `Season changed to ${season}. Select the tournament and refresh the field.`
                               );
                             }}
@@ -2998,7 +3027,20 @@ export default function Page() {
                             {HISTORICAL_SEASONS.map((season) => <option key={season} value={season}>{season}</option>)}
                           </select>
                         </label>
-                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null, event_tour: newDraftTour, event_season: events.find((item) => item.id === event.target.value)?.season ?? newDraftSeason }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
+                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => {
+                          const selectedEvent = events.find((item) => item.id === event.target.value) ?? null;
+                          const season = selectedEvent?.season ?? newDraftSeason;
+                          void updateSession(
+                            {
+                              event_id: event.target.value || null,
+                              event_name: selectedEvent?.name ?? null,
+                              event_tour: newDraftTour,
+                              event_season: season,
+                              manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)),
+                            },
+                            `Linked this session to ${selectedEvent?.name ?? "the selected event"}.`
+                          );
+                        }}>
                           <option value="">No event selected</option>
                           {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
                         </select>
@@ -3574,7 +3616,7 @@ export default function Page() {
                               <input type="checkbox" checked={sessionCountsForSeason(session)} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
                               <span className="min-w-0">
                                 <span className="block truncate font-semibold">{session.event_name ?? session.name}</span>
-                                <span className="block text-xs text-[#617061]">{formatTournamentDate(sessionEventDates[session.id], session.event_season)} | {statusLabel(session.status)}</span>
+                                <span className="block text-xs text-[#617061]">{formatTournamentDate(sessionEventDates[session.id], resolvedSessionSeasons[session.id] ?? sessionEventSeason(session))} | {statusLabel(session.status)}</span>
                               </span>
                               <span className="text-xs font-medium text-[#617061]">{sessionCountsForSeason(session) ? "Counts" : "Side event"}</span>
                             </label>
