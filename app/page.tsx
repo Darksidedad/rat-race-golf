@@ -5,11 +5,13 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
-type EventOption = { id: string; name: string; dateLabel?: string; location?: string; course?: string };
+type EventOption = { id: string; name: string; season: number; dateLabel?: string; location?: string; course?: string };
 type DraftSession = {
   id: string;
   league_id: string | null;
   event_tour: string | null;
+  event_season: number | null;
+  counts_for_season: boolean;
   name: string;
   event_id: string | null;
   event_name: string | null;
@@ -56,6 +58,9 @@ type SeasonTeamStat = {
 };
 
 const ROUNDS = 4;
+const SEASON_EVENT_TARGET = 10;
+const CURRENT_GOLF_SEASON = new Date().getFullYear();
+const HISTORICAL_SEASONS = Array.from({ length: 8 }, (_, index) => CURRENT_GOLF_SEASON - index);
 const DEFAULT_TEAM_NAMES = ["Ryan","Morris","Russ","Swany","Capps","Seth","Jay","Teron","Jesse","Drew","Jimmy","Jones"];
 const DEFAULT_NEW_DRAFT_TEAMS: NewDraftTeam[] = DEFAULT_TEAM_NAMES.map((name) => ({ name, selected: true }));
 const TOUR_OPTIONS = [
@@ -460,6 +465,8 @@ export default function Page() {
   const [events, setEvents] = useState<EventOption[]>([]);
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
+  const [newDraftSeason, setNewDraftSeason] = useState(CURRENT_GOLF_SEASON);
+  const [newSessionCountsForSeason, setNewSessionCountsForSeason] = useState(true);
   const [newSessionEventId, setNewSessionEventId] = useState("");
   const [newDraftModalOpen, setNewDraftModalOpen] = useState(false);
   const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
@@ -494,6 +501,10 @@ export default function Page() {
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
+  const countedSeasonSessions = useMemo(
+    () => sessions.filter((session) => session.counts_for_season !== false),
+    [sessions]
+  );
   const currentLeagueInviteUrl = useMemo(() => {
     if (typeof window === "undefined" || !currentLeague?.slug) return "";
     const url = new URL(window.location.origin + window.location.pathname);
@@ -525,12 +536,12 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
-    loadEvents(newDraftTour);
-  }, [newDraftTour]);
+    loadEvents(newDraftTour, newDraftSeason);
+  }, [newDraftSeason, newDraftTour]);
 
   useEffect(() => {
     loadCurrentSessionEventDetails();
-  }, [currentSession?.event_id, currentSession?.event_tour]);
+  }, [currentSession?.event_id, currentSession?.event_season, currentSession?.event_tour]);
 
   useEffect(() => {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
@@ -614,8 +625,8 @@ export default function Page() {
       setOddsSource("");
       return;
     }
-    loadOdds(currentSession.event_name);
-  }, [currentSession?.event_name, currentSession?.odds_snapshot, currentSession?.odds_source]);
+    loadOdds(currentSession.event_name, currentSession.event_season ?? CURRENT_GOLF_SEASON);
+  }, [currentSession?.event_name, currentSession?.event_season, currentSession?.odds_snapshot, currentSession?.odds_source]);
 
   useEffect(() => {
     if (!profile || isLeagueAdmin) return;
@@ -1270,13 +1281,18 @@ export default function Page() {
   }
 
   async function loadSeasonStats() {
-    if (!sessions.length) {
+    const eligibleSessions = sessions.filter((session) =>
+      session.counts_for_season !== false
+      && (session.status === "scored" || session.status === "finalized")
+      && Object.keys(session.current_positions ?? {}).length > 0
+    );
+    if (!eligibleSessions.length) {
       setSeasonStats([]);
       return;
     }
 
     setSeasonStatsLoading(true);
-    const sessionIds = sessions.map((session) => session.id);
+    const sessionIds = eligibleSessions.map((session) => session.id);
     const [teamsResult, picksResult] = await Promise.all([
       supabase.from("draft_teams").select("*").in("session_id", sessionIds),
       supabase.from("draft_picks").select("*").in("session_id", sessionIds),
@@ -1305,7 +1321,7 @@ export default function Page() {
 
     const aggregate = new Map<string, SeasonTeamStat>();
 
-    sessions.forEach((session) => {
+    eligibleSessions.forEach((session) => {
       const sessionTeams = getAssignedActiveTeams(teamsBySession.get(session.id) ?? []);
       const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
       const positions = session.current_positions ?? {};
@@ -1510,9 +1526,9 @@ export default function Page() {
     setBusy("");
   }
 
-  async function loadEvents(tourId = newDraftTour) {
+  async function loadEvents(tourId = newDraftTour, season = newDraftSeason) {
     try {
-      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}`);
+      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${season}`);
       const payload: EspnEventsResponse = await response.json();
       if (!payload.ok || !payload.events) throw new Error(payload.error);
       setEvents(payload.events);
@@ -1521,7 +1537,7 @@ export default function Page() {
       console.error(error);
       setEvents([]);
       setNewSessionEventId("");
-      setStatusMessage(`Could not load ${TOUR_OPTIONS.find((tour) => tour.id === tourId)?.label ?? "tour"} events from ESPN.`);
+      setStatusMessage(`Could not load ${season} ${TOUR_OPTIONS.find((tour) => tour.id === tourId)?.label ?? "tour"} events from ESPN.`);
     }
   }
 
@@ -1534,7 +1550,8 @@ export default function Page() {
     try {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}`);
+        const seasonQuery = currentSession.event_season ?? CURRENT_GOLF_SEASON;
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`);
         const payload: EspnEventsResponse = await response.json();
         if (!payload.ok || !payload.events) continue;
         const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
@@ -1550,9 +1567,9 @@ export default function Page() {
     }
   }
 
-  async function loadOdds(eventName: string) {
+  async function loadOdds(eventName: string, season = CURRENT_GOLF_SEASON) {
     try {
-      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}`);
+      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}&season=${season}`);
       const payload: EspnOddsResponse = await response.json();
       if (!payload.ok || !payload.odds) {
         setOddsByPlayer({});
@@ -1572,7 +1589,8 @@ export default function Page() {
     if (!currentSession) return false;
     let { error } = await supabase.from("draft_sessions").update(patch).eq("id", currentSession.id);
     if (error && "event_tour" in patch && isMissingColumnError(error, "event_tour")) {
-      const { event_tour: _eventTour, ...fallbackPatch } = patch;
+      const fallbackPatch = { ...patch };
+      delete fallbackPatch.event_tour;
       const fallbackResult = await supabase.from("draft_sessions").update(fallbackPatch).eq("id", currentSession.id);
       error = fallbackResult.error;
     }
@@ -1585,6 +1603,28 @@ export default function Page() {
     await loadSessions();
     await loadSession(currentSession.id, false);
     return true;
+  }
+
+  async function setSessionCountsForSeason(session: DraftSession, countsForSeason: boolean) {
+    if (!canManageLeague) return;
+    setBusy("Updating season schedule...");
+    const { error } = await supabase
+      .from("draft_sessions")
+      .update({ counts_for_season: countsForSeason })
+      .eq("id", session.id);
+    setBusy("");
+
+    if (error) {
+      console.error(error);
+      setStatusMessage(isMissingColumnError(error, "counts_for_season")
+        ? "Run the latest Supabase setup migration before selecting season events."
+        : "Could not update the season schedule.");
+      return;
+    }
+
+    setStatusMessage(`${session.event_name ?? session.name} ${countsForSeason ? "now counts" : "no longer counts"} toward season stats.`);
+    await loadSessions();
+    if (currentSession?.id === session.id) await loadSession(session.id, false);
   }
 
   async function saveFieldSnapshot(sessionId: string, field: Awaited<ReturnType<typeof fetchEspnFieldInput>>, eventName: string | null | undefined, message: string) {
@@ -1722,6 +1762,7 @@ export default function Page() {
 
   function resetNewDraftForm() {
     setNewDraftTeams(DEFAULT_NEW_DRAFT_TEAMS);
+    setNewSessionCountsForSeason(true);
     if (events[0]?.id) setNewSessionEventId(events[0].id);
   }
 
@@ -1768,9 +1809,9 @@ export default function Page() {
     window.open("https://www.online-stopwatch.com/duck-race/", "_blank", "noopener,noreferrer");
   }
 
-  async function fetchEspnFieldInput(eventId: string, tourId: string | null | undefined) {
+  async function fetchEspnFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
     const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
-    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}`);
+    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
     const payload: EspnFieldResponse = await response.json();
     if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
     const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
@@ -1779,7 +1820,7 @@ export default function Page() {
     let oddsSource = "";
     if (payload.eventName) {
       try {
-        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}`);
+        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}&season=${season}`);
         const oddsPayload: EspnOddsResponse = await oddsResponse.json();
         odds = oddsPayload.ok && oddsPayload.odds ? oddsPayload.odds : {};
         oddsSource = oddsPayload.source ?? "";
@@ -1814,7 +1855,7 @@ export default function Page() {
     let fieldImportMessage = "";
     let importedField: Awaited<ReturnType<typeof fetchEspnFieldInput>> | null = null;
     try {
-      const field = await fetchEspnFieldInput(event.id, newDraftTour);
+      const field = await fetchEspnFieldInput(event.id, newDraftTour, newDraftSeason);
       importedField = field;
       playerInput = field.playerInput;
       importedPlayerCount = field.playerCount;
@@ -1825,10 +1866,17 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
     }
-    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
+    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: "", current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
     let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
-    if (sessionInsert.error && isMissingColumnError(sessionInsert.error, "event_tour")) {
-      const { event_tour: _eventTour, ...fallbackPayload } = sessionPayload;
+    if (sessionInsert.error && (
+      isMissingColumnError(sessionInsert.error, "event_tour")
+      || isMissingColumnError(sessionInsert.error, "event_season")
+      || isMissingColumnError(sessionInsert.error, "counts_for_season")
+    )) {
+      const fallbackPayload: Record<string, unknown> = { ...sessionPayload };
+      delete fallbackPayload.event_tour;
+      delete fallbackPayload.event_season;
+      delete fallbackPayload.counts_for_season;
       sessionInsert = await supabase.from("draft_sessions").insert([fallbackPayload]).select("*").single();
     }
     if (sessionInsert.error || !sessionInsert.data) {
@@ -1938,7 +1986,7 @@ export default function Page() {
     if (picks.length) return setStatusMessage("The field and odds are locked after the first pick. Reopen this only by undoing picks first.");
     setBusy("Importing field...");
     try {
-        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
         await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN after cleaning duplicates, team rows, and invalid rows.`);
       } catch (error) {
         console.error(error);
@@ -1957,7 +2005,7 @@ export default function Page() {
     setAutoFieldImportAttempts((current) => ({ ...current, [currentSession.id]: true }));
     setBusy("Importing ESPN field...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
       await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Auto-imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN.`);
     } catch (error) {
       console.error(error);
@@ -2006,7 +2054,7 @@ export default function Page() {
     setAutoFieldRefreshAttempts((current) => ({ ...current, [currentSession.id]: true }));
     setBusy("Refreshing field and odds...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour);
+      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, currentSession.event_season ?? CURRENT_GOLF_SEASON);
       await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Refreshed ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} before the draft started.`);
     } catch (error) {
       console.error(error);
@@ -2021,7 +2069,7 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}`);
+      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${currentSession.event_season ?? CURRENT_GOLF_SEASON}`);
       const payload: EspnLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
@@ -2361,6 +2409,12 @@ export default function Page() {
                       </select>
                     </label>
                     <label className="grid min-w-0 gap-1 text-sm text-[#617061]">
+                      <span className="font-medium text-[#1f2a1d]">Season Year</span>
+                      <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={newDraftSeason} onChange={(event) => setNewDraftSeason(Number(event.target.value))}>
+                        {HISTORICAL_SEASONS.map((season) => <option key={season} value={season}>{season}</option>)}
+                      </select>
+                    </label>
+                    <label className="grid min-w-0 gap-1 text-sm text-[#617061]">
                       <span className="font-medium text-[#1f2a1d]">Tournament</span>
                       <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={newSessionEventId} onChange={(event) => setNewSessionEventId(event.target.value)}>
                         <option value="">{events.length ? "Select an event" : "Loading events..."}</option>
@@ -2375,9 +2429,16 @@ export default function Page() {
                           {selectedNewDraftEvent.location ? <div className="truncate">{selectedNewDraftEvent.location}</div> : null}
                         </div>
                         <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedNewDraftEvent.dateLabel ?? "Date TBD"}</div>
-                        <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-[#617061]">Creating the room will import the latest ESPN field and betting odds before the first pick.</div>
+                        <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-[#617061]">Creating the room will import the ESPN field and available betting odds before the first pick.</div>
                       </div>
                     ) : null}
+                    <label className="flex items-start gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
+                      <input className="mt-1" type="checkbox" checked={newSessionCountsForSeason} onChange={(event) => setNewSessionCountsForSeason(event.target.checked)} />
+                      <span>
+                        <span className="block font-semibold text-[#1f2a1d]">Count toward season stats</span>
+                        <span className="block text-[#617061]">Turn this off for side tournaments. The leaderboard will still be saved and viewable.</span>
+                      </span>
+                    </label>
                   </div>
 
                   <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/80 p-4">
@@ -2458,6 +2519,10 @@ export default function Page() {
                         <strong className="truncate">{session.name}</strong>
                         <span className="text-sm text-[#617061]">{statusLabel(session.status)}</span>
                       </div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
+                        <span>{session.event_season ?? CURRENT_GOLF_SEASON}</span>
+                        <span>{session.counts_for_season === false ? "Side event" : "Season event"}</span>
+                      </div>
                     </button>
                   {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2.5 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
                 </div>
@@ -2531,7 +2596,7 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="my-1 h-px bg-black/10" />
-                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null, event_tour: newDraftTour }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
+                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null, event_tour: newDraftTour, event_season: events.find((item) => item.id === event.target.value)?.season ?? newDraftSeason }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
                           <option value="">No event selected</option>
                           {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
                         </select>
@@ -2545,6 +2610,13 @@ export default function Page() {
                             <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedCurrentSessionEvent.dateLabel ?? "Date TBD"}</div>
                           </div>
                         ) : null}
+                        <label className="flex items-start gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
+                          <input className="mt-1" type="checkbox" checked={currentSession.counts_for_season !== false} onChange={(event) => setSessionCountsForSeason(currentSession, event.target.checked)} />
+                          <span>
+                            <span className="block font-semibold text-[#1f2a1d]">Count this tournament toward season stats</span>
+                            <span className="block text-[#617061]">Side events keep their leaderboard but do not add points, wins, or top-three finishes to the season table.</span>
+                          </span>
+                        </label>
                       <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
@@ -2979,10 +3051,38 @@ export default function Page() {
 
                 {activeRoomTab === "season" ? (
                   <div className="grid gap-5">
+                    {canManageLeague ? (
+                      <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
+                        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <h3 className="m-0 font-[Georgia] text-xl">Season Tournament Schedule</h3>
+                            <div className="mt-1 text-sm text-[#617061]">Select the tournaments that contribute to season points. Side-event leaderboards remain available.</div>
+                          </div>
+                          <span className={`rounded-full px-3 py-1 text-sm font-semibold ${countedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>
+                            {countedSeasonSessions.length} / {SEASON_EVENT_TARGET} selected
+                          </span>
+                        </div>
+                        <div className="grid gap-2">
+                          {sessions.map((session) => (
+                            <label key={session.id} className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/80 px-4 py-3">
+                              <input type="checkbox" checked={session.counts_for_season !== false} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
+                              <span className="min-w-0">
+                                <span className="block truncate font-semibold">{session.event_name ?? session.name}</span>
+                                <span className="block text-xs text-[#617061]">{session.event_season ?? CURRENT_GOLF_SEASON} | {statusLabel(session.status)}</span>
+                              </span>
+                              <span className="text-xs font-medium text-[#617061]">{session.counts_for_season === false ? "Side event" : "Counts"}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                       <div className="mb-4 flex items-center justify-between gap-3">
                         <h3 className="m-0 font-[Georgia] text-xl">Season Stats</h3>
-                        <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{countedSeasonSessions.length} events selected</span>
+                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
+                        </div>
                       </div>
                       {seasonStatsLoading ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Loading season stats...</div> : !seasonStats.length ? (
                         <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No completed tournament data is ready for season stats yet.</div>

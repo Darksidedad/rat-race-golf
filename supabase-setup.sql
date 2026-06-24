@@ -30,6 +30,8 @@ create table if not exists public.league_memberships (
 create table if not exists public.draft_sessions (
   id uuid primary key default gen_random_uuid(),
   event_tour text not null default 'pga',
+  event_season integer not null default extract(year from now())::integer,
+  counts_for_season boolean not null default true,
   name text not null,
   event_id text,
   event_name text,
@@ -84,6 +86,8 @@ alter table public.draft_sessions add column if not exists commissioner_id uuid 
 alter table public.draft_sessions add column if not exists current_totals jsonb not null default '{}'::jsonb;
 alter table public.draft_sessions add column if not exists league_id uuid references public.leagues(id) on delete cascade;
 alter table public.draft_sessions add column if not exists event_tour text not null default 'pga';
+alter table public.draft_sessions add column if not exists event_season integer not null default extract(year from now())::integer;
+alter table public.draft_sessions add column if not exists counts_for_season boolean not null default true;
 alter table public.draft_sessions add column if not exists field_source text;
 alter table public.draft_sessions add column if not exists field_refreshed_at timestamptz;
 alter table public.draft_sessions add column if not exists odds_snapshot jsonb not null default '{}'::jsonb;

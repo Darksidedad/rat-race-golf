@@ -33,6 +33,7 @@ type EspnCompetitor = {
 type EventOption = {
   id: string;
   name: string;
+  season: number;
   dateLabel?: string;
   location?: string;
   course?: string;
@@ -377,7 +378,7 @@ function fetchableScore(competitor: EspnCompetitor) {
   return normalizeGolfScore(competitor.score) ?? normalizeGolfScore(competitor.linescores?.[0]?.displayValue ?? null);
 }
 
-function extractEventsFromScoreboard(scoreboardJson: any) {
+function extractEventsFromScoreboard(scoreboardJson: any, season: number) {
   const events = scoreboardJson?.events;
   if (!Array.isArray(events)) return [];
 
@@ -385,12 +386,13 @@ function extractEventsFromScoreboard(scoreboardJson: any) {
     .map((event: any) => ({
       id: String(event?.id ?? ""),
       name: String(event?.name ?? event?.shortName ?? "").trim(),
+      season,
       dateLabel: formatEventDateRange(event?.date, event?.endDate),
     }))
     .filter((event: EventOption) => event.id && event.name);
 }
 
-function extractEventsFromScheduleHtml(html: string) {
+function extractEventsFromScheduleHtml(html: string, season: number) {
   const matches = [...html.matchAll(/<tr[^>]*>([\s\S]*?leaderboard\?tournamentId=(\d+)[\s\S]*?)<\/tr>/g)];
   const deduped = new Map<string, EventOption>();
 
@@ -402,7 +404,7 @@ function extractEventsFromScheduleHtml(html: string) {
     const rawLocation = cleanHtmlText(rowHtml.match(/eventAndLocation__tournamentLocation[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? "") || undefined;
     const { course, location } = splitCourseAndLocation(rawLocation);
     if (!id || !name || deduped.has(id)) continue;
-    deduped.set(id, { id, name, dateLabel, course, location });
+    deduped.set(id, { id, name, season, dateLabel, course, location });
   }
 
   return Array.from(deduped.values());
@@ -716,11 +718,9 @@ async function fetchText(url: string) {
   return res.text();
 }
 
-async function fetchLeaderboardHtmlForEvent(eventId: string) {
-  const year = new Date().getFullYear();
+async function fetchLeaderboardHtmlForEvent(eventId: string, season = new Date().getFullYear()) {
   const urls = [
-    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}/season/${year}`,
-    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}/season/${year - 1}`,
+    `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}/season/${season}`,
     `https://www.espn.com/golf/leaderboard/_/tournamentId/${eventId}`,
   ];
 
@@ -828,15 +828,15 @@ async function fetchTravelersFieldForEvent(eventName: string | undefined, eventI
   return null;
 }
 
-async function fetchScheduledEvent(eventId: string | null, tour: { scheduleSlug: string }) {
+async function fetchScheduledEvent(eventId: string | null, tour: { scheduleSlug: string }, season: number) {
   if (!eventId) return null;
 
-  const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}`);
-  return extractEventsFromScheduleHtml(scheduleHtml).find((event) => event.id === eventId) ?? null;
+  const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}/season/${season}`);
+  return extractEventsFromScheduleHtml(scheduleHtml, season).find((event) => event.id === eventId) ?? null;
 }
 
-async function findOddsArticle(eventName: string) {
-  const year = new Date().getFullYear();
+async function findOddsArticle(eventName: string, season = new Date().getFullYear()) {
+  const year = season;
   const eventSlug = eventName
     .toLowerCase()
     .replace(/&/g, "and")
@@ -874,9 +874,9 @@ async function findOddsArticle(eventName: string) {
   return urls[0] ?? null;
 }
 
-async function fetchScoreboardForEvent(eventId: string | null, rawTour: string | null) {
+async function fetchScoreboardForEvent(eventId: string | null, rawTour: string | null, season: number) {
   for (const tour of tourSearchOrder(rawTour)) {
-    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+    const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard?dates=${season}`;
     const scoreboardJson = await fetchJson(scoreboardUrl);
     const event = extractEventById(scoreboardJson, eventId);
     const competitors = extractCompetitors(scoreboardJson, eventId);
@@ -885,8 +885,24 @@ async function fetchScoreboardForEvent(eventId: string | null, rawTour: string |
     }
   }
 
+  if (eventId) {
+    for (const tour of tourSearchOrder(rawTour)) {
+      try {
+        const summaryUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/summary?event=${encodeURIComponent(eventId)}`;
+        const summaryJson = await fetchJson(summaryUrl);
+        const event = summaryJson?.header ?? null;
+        const competitors = event?.competitions?.[0]?.competitors;
+        if (event && Array.isArray(competitors) && competitors.length) {
+          return { tour, scoreboardJson: summaryJson, scoreboardUrl: summaryUrl, event, competitors };
+        }
+      } catch {
+        // Some tours do not expose historical summaries. Continue through the tour aliases.
+      }
+    }
+  }
+
   const tour = resolveTour(rawTour);
-  const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+  const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard?dates=${season}`;
   const scoreboardJson = await fetchJson(scoreboardUrl);
   return {
     tour,
@@ -901,14 +917,18 @@ export async function GET(req: NextRequest) {
   const action = req.nextUrl.searchParams.get("action");
   const eventId = req.nextUrl.searchParams.get("eventId");
   const eventNameParam = req.nextUrl.searchParams.get("eventName");
+  const requestedSeason = Number(req.nextUrl.searchParams.get("season"));
+  const season = Number.isInteger(requestedSeason) && requestedSeason >= 2000 && requestedSeason <= new Date().getFullYear() + 1
+    ? requestedSeason
+    : new Date().getFullYear();
 
   try {
     if (action === "events") {
       const tour = resolveTour(req.nextUrl.searchParams.get("tour"));
-      const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard`;
+      const scoreboardUrl = `https://site.api.espn.com/apis/site/v2/sports/golf/${tour.slug}/scoreboard?dates=${season}`;
       const scoreboardJson = await fetchJson(scoreboardUrl);
-      const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}`);
-      const events = mergeEvents(extractEventsFromScoreboard(scoreboardJson), extractEventsFromScheduleHtml(scheduleHtml));
+      const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}/season/${season}`);
+      const events = mergeEvents(extractEventsFromScoreboard(scoreboardJson, season), extractEventsFromScheduleHtml(scheduleHtml, season));
       return NextResponse.json({
         ok: true,
         tour: tour.label,
@@ -924,7 +944,7 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      const articleUrl = await findOddsArticle(eventNameParam.trim());
+      const articleUrl = await findOddsArticle(eventNameParam.trim(), season);
       if (!articleUrl) {
         return NextResponse.json({
           ok: false,
@@ -944,11 +964,11 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const { scoreboardUrl, event, competitors, tour } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"));
+    const { scoreboardUrl, event, competitors, tour } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"), season);
     let eventName = event?.name ?? undefined;
     if (action === "field" && eventId && !eventName) {
       try {
-        eventName = (await fetchScheduledEvent(eventId, tour))?.name ?? undefined;
+        eventName = (await fetchScheduledEvent(eventId, tour, season))?.name ?? undefined;
       } catch {
         // Schedule lookup is best effort; the ESPN live feed may still be enough.
       }
@@ -957,7 +977,7 @@ export async function GET(req: NextRequest) {
     const scoreboardPlayers = extractPlayerField(competitors);
 
     if (action === "field" && eventId && (!competitors.length || !scoreboardPlayers.length)) {
-      const page = await fetchLeaderboardHtmlForEvent(eventId);
+      const page = await fetchLeaderboardHtmlForEvent(eventId, season);
       const players = page ? extractPlayerFieldFromLeaderboardHtml(page.html) : [];
 
       if (players.length) {
