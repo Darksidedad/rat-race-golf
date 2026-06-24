@@ -711,7 +711,7 @@ export default function Page() {
   useEffect(() => {
     if (activeRoomTab !== "season" || !sessions.length) return;
     void loadSeasonStats();
-  }, [activeRoomTab, seasonStatsView, sessions]);
+  }, [activeRoomTab, profiles, seasonStatsView, sessions]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -1361,8 +1361,22 @@ export default function Page() {
       return;
     }
 
+    const seasonTeams = (teamsResult.data ?? []) as DraftTeam[];
+    const ownerIds = Array.from(new Set(seasonTeams.map((team) => team.owner_user_id).filter((ownerId): ownerId is string => !!ownerId)));
+    const ownerProfilesResult = ownerIds.length
+      ? await supabase.from("profiles").select("id, team_name").in("id", ownerIds)
+      : { data: [], error: null };
+    if (ownerProfilesResult.error) console.error(ownerProfilesResult.error);
+    const currentTeamNameByOwner = new Map<string, string>();
+    ((ownerProfilesResult.data ?? []) as Pick<Profile, "id" | "team_name">[]).forEach((ownerProfile) => {
+      if (ownerProfile.team_name?.trim()) currentTeamNameByOwner.set(ownerProfile.id, ownerProfile.team_name.trim());
+    });
+    profiles.forEach((ownerProfile) => {
+      if (ownerProfile.team_name?.trim()) currentTeamNameByOwner.set(ownerProfile.id, ownerProfile.team_name.trim());
+    });
+
     const teamsBySession = new Map<string, DraftTeam[]>();
-    ((teamsResult.data ?? []) as DraftTeam[]).forEach((team) => {
+    seasonTeams.forEach((team) => {
       const existing = teamsBySession.get(team.session_id) ?? [];
       existing.push(team);
       teamsBySession.set(team.session_id, existing);
@@ -1388,11 +1402,13 @@ export default function Page() {
             return pointsForPosition(position);
           });
         const total = [...playerScores].sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
-        return { teamName: team.name, total };
+        const teamName = team.owner_user_id ? currentTeamNameByOwner.get(team.owner_user_id) ?? team.name : team.name;
+        const teamKey = team.owner_user_id ? `owner:${team.owner_user_id}` : `name:${normalizeName(team.name)}`;
+        return { teamKey, teamName, total };
       }).sort((a, b) => b.total - a.total);
 
       sessionLeaderboard.forEach((entry, index) => {
-        const current = aggregate.get(entry.teamName) ?? {
+        const current = aggregate.get(entry.teamKey) ?? {
           teamName: entry.teamName,
           eventsPlayed: 0,
           wins: 0,
@@ -1411,7 +1427,8 @@ export default function Page() {
         current.bestFinish = current.bestFinish === null ? finish : Math.min(current.bestFinish, finish);
         if (finish === 1) current.wins += 1;
         if (finish <= 3) current.top3 += 1;
-        aggregate.set(entry.teamName, current);
+        current.teamName = entry.teamName;
+        aggregate.set(entry.teamKey, current);
       });
     });
 
@@ -3285,9 +3302,14 @@ export default function Page() {
                             <h3 className="m-0 font-[Georgia] text-xl">Season Tournament Schedule</h3>
                             <div className="mt-1 text-sm text-[#617061]">Checked events count in the official League Season view. Side events remain included in All Tournaments.</div>
                           </div>
-                          <span className={`rounded-full px-3 py-1 text-sm font-semibold ${countedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>
-                            {countedSeasonSessions.length} / {SEASON_EVENT_TARGET} selected
-                          </span>
+                          <div className="flex flex-wrap justify-end gap-2">
+                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-sm font-semibold text-[#617061]">
+                              {countedSeasonSessions.length} of {sessions.length} selected
+                            </span>
+                            <span className={`rounded-full px-3 py-1 text-sm font-semibold ${countedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>
+                              Target: {SEASON_EVENT_TARGET}
+                            </span>
+                          </div>
                         </div>
                         <div className="grid gap-2">
                           {sortedSessions.map((session) => (
