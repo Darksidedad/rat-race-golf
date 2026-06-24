@@ -1658,16 +1658,17 @@ export default function Page() {
 
   async function updateSession(patch: Partial<DraftSession>, message: string) {
     if (!currentSession) return false;
-    let { error } = await supabase.from("draft_sessions").update(patch).eq("id", currentSession.id);
-    if (error && "event_tour" in patch && isMissingColumnError(error, "event_tour")) {
-      const fallbackPatch = { ...patch };
-      delete fallbackPatch.event_tour;
-      const fallbackResult = await supabase.from("draft_sessions").update(fallbackPatch).eq("id", currentSession.id);
+    const supportedPatch = { ...patch };
+    let { error } = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id);
+    for (const optionalColumn of ["event_tour", "event_season", "counts_for_season"] as const) {
+      if (!error || !(optionalColumn in supportedPatch) || !isMissingColumnError(error, optionalColumn)) continue;
+      delete supportedPatch[optionalColumn];
+      const fallbackResult = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id);
       error = fallbackResult.error;
     }
     if (error) {
       console.error(error);
-      setStatusMessage("Could not save the tournament changes.");
+      setStatusMessage(error.message ? `Could not save the tournament changes: ${error.message}` : "Could not save the tournament changes.");
       return false;
     }
     setStatusMessage(message);
