@@ -58,10 +58,15 @@ type SeasonTeamStat = {
   lastTotal: number | null;
   totalToPar: number;
   toParScores: number;
-  golferSelections: Record<string, { name: string; count: number }>;
+  golferSelections: Record<string, { name: string; count: number; points: number }>;
   mostDraftedGolfer: string | null;
   mostDraftedCount: number;
+  mostSuccessfulGolfer: string | null;
+  mostSuccessfulGolferPoints: number;
   uniqueGolfers: number;
+  cuts: number;
+  completedGolferResults: number;
+  bestEventPoints: number;
 };
 
 const ROUNDS = 4;
@@ -1431,10 +1436,16 @@ export default function Page() {
           const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
             const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
             const storedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+            const parsedTotal = parseStoredTotal(storedTotal);
+            const parsedThru = parseStoredThru(storedTotal);
+            const normalizedResult = normalizeLegacyNonScoringResult(position, parsedTotal, parsedThru);
             return {
               pick,
+              position,
               points: pointsForPosition(position),
-              toPar: numericGolfScore(parseStoredTotal(storedTotal)),
+              total: normalizedResult.total,
+              thru: normalizedResult.thru,
+              toPar: numericGolfScore(normalizedResult.total),
             };
           });
         const countingPlayers = [...playerScores].sort((a, b) => b.points - a.points || a.pick.pick_number - b.pick.pick_number).slice(0, 3);
@@ -1442,7 +1453,7 @@ export default function Page() {
         const numericCountingScores = countingPlayers.map((player) => player.toPar).filter((score): score is number => score !== null);
         const golferSelections = Object.fromEntries(playerScores.map((player) => [
           normalizeName(player.pick.player_name),
-          { name: player.pick.player_name, count: 1 },
+          { name: player.pick.player_name, count: 1, points: player.points },
         ]));
         const effectiveOwnerId = team.owner_user_id ?? ownerByHistoricalTeamName.get(normalizeName(team.name)) ?? null;
         const teamName = effectiveOwnerId ? currentTeamNameByOwner.get(effectiveOwnerId) ?? team.name : team.name;
@@ -1454,6 +1465,8 @@ export default function Page() {
           totalToPar: numericCountingScores.reduce((sum, score) => sum + score, 0),
           toParScores: numericCountingScores.length,
           golferSelections,
+          cuts: playerScores.filter((player) => player.total === "CUT" || player.thru === "CUT").length,
+          completedGolferResults: playerScores.filter((player) => player.position !== null || isNonScoringResult(player.total, player.thru)).length,
         };
       }).sort((a, b) => b.total - a.total);
 
@@ -1471,7 +1484,12 @@ export default function Page() {
           golferSelections: {},
           mostDraftedGolfer: null,
           mostDraftedCount: 0,
+          mostSuccessfulGolfer: null,
+          mostSuccessfulGolferPoints: 0,
           uniqueGolfers: 0,
+          cuts: 0,
+          completedGolferResults: 0,
+          bestEventPoints: 0,
         };
 
         const finish = index === 0 || entry.total !== sessionLeaderboard[index - 1].total
@@ -1480,11 +1498,15 @@ export default function Page() {
         current.eventsPlayed += 1;
         current.seasonPoints += entry.total;
         current.lastTotal = entry.total;
+        current.bestEventPoints = Math.max(current.bestEventPoints, entry.total);
         current.totalToPar += entry.totalToPar;
         current.toParScores += entry.toParScores;
+        current.cuts += entry.cuts;
+        current.completedGolferResults += entry.completedGolferResults;
         Object.entries(entry.golferSelections).forEach(([golferKey, golfer]) => {
-          const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0 };
+          const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0, points: 0 };
           selection.count += golfer.count;
+          selection.points += golfer.points;
           current.golferSelections[golferKey] = selection;
         });
         current.bestFinish = current.bestFinish === null ? finish : Math.min(current.bestFinish, finish);
@@ -1507,11 +1529,15 @@ export default function Page() {
       current.wins += entry.wins;
       current.top3 += entry.top3;
       current.seasonPoints += entry.seasonPoints;
+      current.bestEventPoints = Math.max(current.bestEventPoints, entry.bestEventPoints);
       current.totalToPar += entry.totalToPar;
       current.toParScores += entry.toParScores;
+      current.cuts += entry.cuts;
+      current.completedGolferResults += entry.completedGolferResults;
       Object.entries(entry.golferSelections).forEach(([golferKey, golfer]) => {
-        const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0 };
+        const selection = current.golferSelections[golferKey] ?? { name: golfer.name, count: 0, points: 0 };
         selection.count += golfer.count;
+        selection.points += golfer.points;
         current.golferSelections[golferKey] = selection;
       });
       current.bestFinish = current.bestFinish === null
@@ -1525,10 +1551,13 @@ export default function Page() {
     setSeasonStats(
       Array.from(consolidated.values()).map((entry) => {
         const selections = Object.values(entry.golferSelections).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        const successfulGolfers = [...Object.values(entry.golferSelections)].sort((a, b) => b.points - a.points || b.count - a.count || a.name.localeCompare(b.name));
         return {
           ...entry,
           mostDraftedGolfer: selections[0]?.name ?? null,
           mostDraftedCount: selections[0]?.count ?? 0,
+          mostSuccessfulGolfer: successfulGolfers[0]?.name ?? null,
+          mostSuccessfulGolferPoints: successfulGolfers[0]?.points ?? 0,
           uniqueGolfers: selections.length,
         };
       }).sort((a, b) => {
@@ -3412,6 +3441,26 @@ export default function Page() {
                                       <span className="block text-[9px] font-semibold uppercase text-[#617061]">Draft Variety</span>
                                       <span className="block font-semibold">{entry.uniqueGolfers} golfers</span>
                                       <span className="text-xs text-[#617061]">{entry.eventsPlayed} events</span>
+                                    </div>
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Cut Rate</span>
+                                      <span className="block font-semibold">{entry.completedGolferResults ? `${((entry.cuts / entry.completedGolferResults) * 100).toFixed(0)}%` : "-"}</span>
+                                      <span className="text-xs text-[#617061]">{entry.cuts} of {entry.completedGolferResults} results</span>
+                                    </div>
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Podium Rate</span>
+                                      <span className="block font-semibold">{entry.eventsPlayed ? `${((entry.top3 / entry.eventsPlayed) * 100).toFixed(0)}%` : "-"}</span>
+                                      <span className="text-xs text-[#617061]">{entry.top3} top-three finishes</span>
+                                    </div>
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Best Event</span>
+                                      <span className="block font-semibold">{entry.bestEventPoints} pts</span>
+                                      <span className="text-xs text-[#617061]">Highest weekly total</span>
+                                    </div>
+                                    <div className="rounded-xl bg-[#f7f2e9] px-3 py-2">
+                                      <span className="block text-[9px] font-semibold uppercase text-[#617061]">Most Successful Golfer</span>
+                                      <span className="block truncate font-semibold">{entry.mostSuccessfulGolfer ?? "-"}</span>
+                                      <span className="text-xs text-[#617061]">{entry.mostSuccessfulGolfer ? `${entry.mostSuccessfulGolferPoints} fantasy points` : "No points"}</span>
                                     </div>
                                   </div>
                                 </div>
