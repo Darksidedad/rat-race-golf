@@ -617,6 +617,12 @@ export default function Page() {
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
+    if (!currentSession) return;
+    setNewDraftTour(currentSession.event_tour ?? "pga");
+    setNewDraftSeason(currentSession.event_season ?? CURRENT_GOLF_SEASON);
+  }, [currentSession?.id, currentSession?.event_season, currentSession?.event_tour]);
+
+  useEffect(() => {
     if (currentSession?.odds_snapshot && Object.keys(currentSession.odds_snapshot).length) {
       setOddsByPlayer(currentSession.odds_snapshot);
       setOddsSource(currentSession.odds_source ?? "");
@@ -1609,24 +1615,29 @@ export default function Page() {
 
   async function setSessionCountsForSeason(session: DraftSession, countsForSeason: boolean) {
     if (!canManageLeague) return;
+    const previousValue = session.counts_for_season !== false;
+    setSessions((current) => current.map((entry) => entry.id === session.id ? { ...entry, counts_for_season: countsForSeason } : entry));
+    setCurrentSession((current) => current?.id === session.id ? { ...current, counts_for_season: countsForSeason } : current);
     setBusy("Updating season schedule...");
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("draft_sessions")
       .update({ counts_for_season: countsForSeason })
-      .eq("id", session.id);
+      .eq("id", session.id)
+      .select("id, counts_for_season")
+      .maybeSingle();
     setBusy("");
 
-    if (error) {
+    if (error || !data) {
       console.error(error);
+      setSessions((current) => current.map((entry) => entry.id === session.id ? { ...entry, counts_for_season: previousValue } : entry));
+      setCurrentSession((current) => current?.id === session.id ? { ...current, counts_for_season: previousValue } : current);
       setStatusMessage(isMissingColumnError(error, "counts_for_season")
         ? "Run the latest Supabase setup migration before selecting season events."
-        : "Could not update the season schedule.");
+        : "The season setting could not be saved. Confirm that your account is a league commissioner or assistant commissioner.");
       return;
     }
 
     setStatusMessage(`${session.event_name ?? session.name} ${countsForSeason ? "now counts" : "no longer counts"} toward season stats.`);
-    await loadSessions();
-    if (currentSession?.id === session.id) await loadSession(session.id, false);
   }
 
   async function saveFieldSnapshot(sessionId: string, field: Awaited<ReturnType<typeof fetchEspnFieldInput>>, eventName: string | null | undefined, message: string) {
@@ -2650,6 +2661,23 @@ export default function Page() {
                           </div>
                         </div>
                         <div className="my-1 h-px bg-black/10" />
+                        <label className="grid gap-1 text-sm text-[#617061]">
+                          <span className="font-medium text-[#1f2a1d]">Tournament Season</span>
+                          <select
+                            className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3"
+                            value={currentSession.event_season ?? CURRENT_GOLF_SEASON}
+                            onChange={(event) => {
+                              const season = Number(event.target.value);
+                              setNewDraftSeason(season);
+                              void updateSession(
+                                { event_season: season, event_id: null, event_name: null },
+                                `Season changed to ${season}. Select the tournament and refresh the field.`
+                              );
+                            }}
+                          >
+                            {HISTORICAL_SEASONS.map((season) => <option key={season} value={season}>{season}</option>)}
+                          </select>
+                        </label>
                         <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => updateSession({ event_id: event.target.value || null, event_name: events.find((item) => item.id === event.target.value)?.name ?? null, event_tour: newDraftTour, event_season: events.find((item) => item.id === event.target.value)?.season ?? newDraftSeason }, `Linked this session to ${events.find((item) => item.id === event.target.value)?.name ?? "the selected event"}.`)}>
                           <option value="">No event selected</option>
                           {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
