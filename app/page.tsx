@@ -59,6 +59,7 @@ type SeasonTeamStat = {
 
 const ROUNDS = 4;
 const SEASON_EVENT_TARGET = 10;
+const SEASON_EXCLUDED_MARKER = "# RRG_SIDE_EVENT";
 const CURRENT_GOLF_SEASON = new Date().getFullYear();
 const HISTORICAL_SEASONS = Array.from({ length: 8 }, (_, index) => CURRENT_GOLF_SEASON - index);
 const DEFAULT_TEAM_NAMES = ["Ryan","Morris","Russ","Swany","Capps","Seth","Jay","Teron","Jesse","Drew","Jimmy","Jones"];
@@ -119,6 +120,17 @@ function isMissingColumnError(error: { message?: string; code?: string } | null 
 
 function formatEventDropdownOption(event: EventOption) {
   return event.dateLabel ? `${event.name} (${event.dateLabel})` : event.name;
+}
+
+function sessionCountsForSeason(session: DraftSession) {
+  return session.counts_for_season !== false
+    && !String(session.manual_leaderboard_input ?? "").split(/\r?\n/).some((line) => line.trim() === SEASON_EXCLUDED_MARKER);
+}
+
+function manualLeaderboardWithSeasonSetting(input: string | null | undefined, countsForSeason: boolean) {
+  const lines = String(input ?? "").split(/\r?\n/).filter((line) => line.trim() !== SEASON_EXCLUDED_MARKER);
+  if (!countsForSeason) lines.unshift(SEASON_EXCLUDED_MARKER);
+  return lines.join("\n").trim();
 }
 
 function formatPlayerPoolInputWithOdds(playerInput: string, odds: Record<string, number>) {
@@ -504,7 +516,7 @@ export default function Page() {
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
   const countedSeasonSessions = useMemo(
-    () => sessions.filter((session) => session.counts_for_season !== false),
+    () => sessions.filter(sessionCountsForSeason),
     [sessions]
   );
   const currentLeagueInviteUrl = useMemo(() => {
@@ -613,7 +625,7 @@ export default function Page() {
 
   useEffect(() => {
     setPlayerPoolDraft(currentSession?.player_input ?? "");
-    setManualLeaderboardDraft(currentSession?.manual_leaderboard_input ?? "");
+    setManualLeaderboardDraft(manualLeaderboardWithSeasonSetting(currentSession?.manual_leaderboard_input, true));
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
@@ -1290,7 +1302,7 @@ export default function Page() {
 
   async function loadSeasonStats() {
     const eligibleSessions = sessions.filter((session) =>
-      session.counts_for_season !== false
+      sessionCountsForSeason(session)
       && (session.status === "scored" || session.status === "finalized")
       && Object.keys(session.current_positions ?? {}).length > 0
     );
@@ -1615,25 +1627,37 @@ export default function Page() {
 
   async function setSessionCountsForSeason(session: DraftSession, countsForSeason: boolean) {
     if (!canManageLeague) return;
-    const previousValue = session.counts_for_season !== false;
-    setSessions((current) => current.map((entry) => entry.id === session.id ? { ...entry, counts_for_season: countsForSeason } : entry));
-    setCurrentSession((current) => current?.id === session.id ? { ...current, counts_for_season: countsForSeason } : current);
+    const previousValue = sessionCountsForSeason(session);
+    const nextManualInput = manualLeaderboardWithSeasonSetting(session.manual_leaderboard_input, countsForSeason);
+    const optimisticSession = { ...session, counts_for_season: countsForSeason, manual_leaderboard_input: nextManualInput };
+    setSessions((current) => current.map((entry) => entry.id === session.id ? optimisticSession : entry));
+    setCurrentSession((current) => current?.id === session.id ? { ...current, ...optimisticSession } : current);
     setBusy("Updating season schedule...");
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("draft_sessions")
-      .update({ counts_for_season: countsForSeason })
+      .update({ counts_for_season: countsForSeason, manual_leaderboard_input: nextManualInput })
       .eq("id", session.id)
       .select("id, counts_for_season")
       .maybeSingle();
+
+    if (error && isMissingColumnError(error, "counts_for_season")) {
+      const fallback = await supabase
+        .from("draft_sessions")
+        .update({ manual_leaderboard_input: nextManualInput })
+        .eq("id", session.id)
+        .select("id")
+        .maybeSingle();
+      data = fallback.data ? { id: fallback.data.id, counts_for_season: countsForSeason } : null;
+      error = fallback.error;
+    }
     setBusy("");
 
     if (error || !data) {
       console.error(error);
-      setSessions((current) => current.map((entry) => entry.id === session.id ? { ...entry, counts_for_season: previousValue } : entry));
-      setCurrentSession((current) => current?.id === session.id ? { ...current, counts_for_season: previousValue } : current);
-      setStatusMessage(isMissingColumnError(error, "counts_for_season")
-        ? "Run the latest Supabase setup migration before selecting season events."
-        : "The season setting could not be saved. Confirm that your account is a league commissioner or assistant commissioner.");
+      const revertedManualInput = manualLeaderboardWithSeasonSetting(session.manual_leaderboard_input, previousValue);
+      setSessions((current) => current.map((entry) => entry.id === session.id ? { ...entry, counts_for_season: previousValue, manual_leaderboard_input: revertedManualInput } : entry));
+      setCurrentSession((current) => current?.id === session.id ? { ...current, counts_for_season: previousValue, manual_leaderboard_input: revertedManualInput } : current);
+      setStatusMessage("The season setting could not be saved. Confirm that your account is a league commissioner or assistant commissioner.");
       return;
     }
 
@@ -2199,7 +2223,7 @@ export default function Page() {
       setStatusMessage("Paste at least one leaderboard line before applying manual scores.");
       return;
     }
-    await updateSession({ manual_leaderboard_input: manualLeaderboardDraft, current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
+    await updateSession({ manual_leaderboard_input: manualLeaderboardWithSeasonSetting(manualLeaderboardDraft, sessionCountsForSeason(currentSession)), current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
     setBusy("");
   }
 
@@ -2586,7 +2610,7 @@ export default function Page() {
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-[#617061]">
                         <span>{session.event_season ?? CURRENT_GOLF_SEASON}</span>
-                        <span>{session.counts_for_season === false ? "Side event" : "Season event"}</span>
+                        <span>{sessionCountsForSeason(session) ? "Season event" : "Side event"}</span>
                       </div>
                     </button>
                   {canManageLeague ? <button className="shrink-0 rounded-full border border-[#9d4b2f]/20 bg-white px-2.5 py-1 text-xs text-[#9d4b2f]" onClick={() => deleteSession(session)}>Delete</button> : null}
@@ -2693,7 +2717,7 @@ export default function Page() {
                           </div>
                         ) : null}
                         <label className="flex items-start gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
-                          <input className="mt-1" type="checkbox" checked={currentSession.counts_for_season !== false} onChange={(event) => setSessionCountsForSeason(currentSession, event.target.checked)} />
+                          <input className="mt-1" type="checkbox" checked={sessionCountsForSeason(currentSession)} onChange={(event) => setSessionCountsForSeason(currentSession, event.target.checked)} />
                           <span>
                             <span className="block font-semibold text-[#1f2a1d]">Count this tournament toward season stats</span>
                             <span className="block text-[#617061]">Side events keep their leaderboard but do not add points, wins, or top-three finishes to the season table.</span>
@@ -3147,12 +3171,12 @@ export default function Page() {
                         <div className="grid gap-2">
                           {sessions.map((session) => (
                             <label key={session.id} className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/80 px-4 py-3">
-                              <input type="checkbox" checked={session.counts_for_season !== false} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
+                              <input type="checkbox" checked={sessionCountsForSeason(session)} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
                               <span className="min-w-0">
                                 <span className="block truncate font-semibold">{session.event_name ?? session.name}</span>
                                 <span className="block text-xs text-[#617061]">{session.event_season ?? CURRENT_GOLF_SEASON} | {statusLabel(session.status)}</span>
                               </span>
-                              <span className="text-xs font-medium text-[#617061]">{session.counts_for_season === false ? "Side event" : "Counts"}</span>
+                              <span className="text-xs font-medium text-[#617061]">{sessionCountsForSeason(session) ? "Counts" : "Side event"}</span>
                             </label>
                           ))}
                         </div>
