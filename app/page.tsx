@@ -580,6 +580,8 @@ export default function Page() {
   const [sessionEventDates, setSessionEventDates] = useState<Record<string, string>>({});
   const [resolvedSessionSeasons, setResolvedSessionSeasons] = useState<Record<string, number>>({});
   const [sessionDatesLoaded, setSessionDatesLoaded] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [defaultSessionResolved, setDefaultSessionResolved] = useState(false);
   const [expandedSessionYears, setExpandedSessionYears] = useState<number[]>([]);
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
@@ -767,6 +769,8 @@ export default function Page() {
     setCurrentSession(null);
     setTeams([]);
     setPicks([]);
+    setSessionsLoaded(false);
+    setDefaultSessionResolved(false);
   }, [currentLeagueId]);
 
   useEffect(() => {
@@ -777,8 +781,15 @@ export default function Page() {
     void loadSessions();
   }, [authChecked, user, currentLeagueId]);
   useEffect(() => {
-    if (sessionDatesLoaded && !selectedSessionId && featuredSession?.id) setSelectedSessionId(featuredSession.id);
-  }, [featuredSession?.id, selectedSessionId, sessionDatesLoaded]);
+    if (!sessionsLoaded || defaultSessionResolved) return;
+    if (!sessions.length) {
+      setDefaultSessionResolved(true);
+      return;
+    }
+    if (!sessionDatesLoaded) return;
+    if (!selectedSessionId && featuredSession?.id) setSelectedSessionId(featuredSession.id);
+    setDefaultSessionResolved(true);
+  }, [defaultSessionResolved, featuredSession?.id, selectedSessionId, sessionDatesLoaded, sessions.length, sessionsLoaded]);
 
   useEffect(() => {
     if (!sessions.length) {
@@ -964,6 +975,7 @@ export default function Page() {
   const setupHasOdds = Object.keys(displayOddsByPlayer).length > 0;
   const setupReady = setupHasEvent && setupHasTeams && setupHasField;
   const tournamentIdentityLocked = picks.length > 0;
+  const tournamentWorkspaceReady = !currentLeagueId || (defaultSessionResolved && (!selectedSessionId || currentSession?.id === selectedSessionId));
   const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
   const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
   const [draftFlowWidth, setDraftFlowWidth] = useState(0);
@@ -1833,15 +1845,18 @@ export default function Page() {
   async function loadSessions() {
     if (!currentLeagueId) {
       setSessions([]);
+      setSessionsLoaded(true);
       return;
     }
     const { data, error } = await supabase.from("draft_sessions").select("*").eq("league_id", currentLeagueId).order("created_at", { ascending: false });
     if (error) {
       console.error(error);
       setStatusMessage("Could not load tournament sessions from Supabase.");
+      setSessionsLoaded(true);
       return;
     }
     setSessions((data ?? []) as DraftSession[]);
+    setSessionsLoaded(true);
   }
 
   async function loadSessionEventDates(sessionList: DraftSession[]) {
@@ -3069,6 +3084,17 @@ export default function Page() {
           </div>
         ) : null}
 
+      {!tournamentWorkspaceReady ? (
+        <div className="mx-auto grid min-h-[360px] max-w-[1880px] place-items-center rounded-3xl border border-black/10 bg-white/70 p-6 shadow-[0_18px_45px_rgba(74,57,28,0.12)]">
+          <div className="grid justify-items-center gap-3 text-center">
+            <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#d9eadf] border-t-[#1a5c3a]" aria-hidden="true" />
+            <div>
+              <div className="font-[Georgia] text-xl">Loading current tournament</div>
+              <div className="mt-1 text-sm text-[#617061]">Checking the league schedule and opening the right event.</div>
+            </div>
+          </div>
+        </div>
+      ) : (
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
         <section className="rrg-card rounded-3xl p-5 lg:sticky lg:top-4">
           {!canManageLeague ? <h2 className="mb-4 mt-0 font-[Georgia] text-2xl">League Hub</h2> : null}
@@ -3885,6 +3911,7 @@ export default function Page() {
             )}
         </section>
       </div>
+      )}
     </div>
   );
 }
