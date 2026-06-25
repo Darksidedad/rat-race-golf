@@ -859,6 +859,11 @@ export default function Page() {
     void loadSeasonStats();
   }, [activeRoomTab, profiles, resolvedSessionSeasons, seasonStatsView, seasonStatsYear, sessions]);
 
+  useEffect(() => {
+    if (activeRoomTab !== "results" || !currentSession?.event_id) return;
+    void loadTournamentLeaderboard(false);
+  }, [activeRoomTab, currentSession?.event_id, currentSession?.updated_at]);
+
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
   const currentTeamOnClock = useMemo(() => (validDraftOrder ? getCurrentTeamOnClock(teams, picks) : null), [teams, picks, validDraftOrder]);
@@ -2469,9 +2474,9 @@ export default function Page() {
     setBusy("");
   }
 
-  async function openTournamentLeaderboard() {
+  async function loadTournamentLeaderboard(openPanel = true) {
     if (!currentSession?.event_id) return setStatusMessage("Link this draft to a tournament before viewing its leaderboard.");
-    setTournamentLeaderboardOpen(true);
+    if (openPanel) setTournamentLeaderboardOpen(true);
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
@@ -2485,6 +2490,10 @@ export default function Page() {
       setStatusMessage("Could not load the tournament leaderboard.");
     }
     setTournamentLeaderboardLoading(false);
+  }
+
+  function openTournamentLeaderboard() {
+    void loadTournamentLeaderboard(true);
   }
 
   async function autoDraftRandomly() {
@@ -3141,20 +3150,33 @@ export default function Page() {
         </section>
 
         <section className={`rrg-card rounded-3xl ${activeRoomTab === "draft" ? "p-4" : "p-5"}`}>
-            <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-4"} flex items-center justify-between gap-3`}>
-              <h2 className="m-0 font-[Georgia] text-2xl">{currentSession ? currentSession.name : "Pick a session"}</h2>
+            <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-3"} flex flex-wrap items-start justify-between gap-3`}>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-3">
+                  <h2 className="m-0 font-[Georgia] text-2xl">{currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
+                  {currentSession ? (
+                    <div className="flex flex-wrap gap-2">
+                      {canManageLeague ? <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
+                      <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
+                      <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
+                      <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "season" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("season")}>Season</button>
+                    </div>
+                  ) : null}
+                </div>
+                {currentSession && activeRoomTab === "results" ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#617061]">
+                    {currentSessionDisplayEvent?.course ? <a className="font-medium text-[#1a5c3a] underline decoration-[#1a5c3a]/25 underline-offset-2" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">{currentSessionDisplayEvent.course}</a> : null}
+                    {currentSessionDisplayEvent?.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
+                    {currentSessionDisplayEvent?.dateLabel ? <span>{currentSessionDisplayEvent.dateLabel}</span> : null}
+                    <span>Updated {resultsUpdatedLabel}</span>
+                  </div>
+                ) : null}
+              </div>
               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
             </div>
 
             {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
               <div className={activeRoomTab === "draft" ? "grid gap-3" : "grid gap-5"}>
-                <div className="flex flex-wrap gap-2">
-                  {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
-                  <button className={`rounded-full px-4 py-2 ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
-                  <button className={`rounded-full px-4 py-2 ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
-                  <button className={`rounded-full px-4 py-2 ${activeRoomTab === "season" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("season")}>Season</button>
-                </div>
-
                 {canManageLeague && activeRoomTab === "setup" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
@@ -3593,56 +3615,28 @@ export default function Page() {
                   ) : null}
 
                 {activeRoomTab === "results" ? (
-                <div className="grid gap-3">
-                  <div className="rounded-2xl border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-3 text-white shadow-[0_14px_32px_rgba(74,57,28,0.14)]">
-                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                            <div className="grid gap-1">
-                                <h3 className="m-0 font-[Georgia] text-2xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
-                                {currentSessionDisplayEvent?.course || currentSessionDisplayEvent?.location ? (
-                                  <div className="text-xs font-medium text-white/88">
-                                    {currentSessionDisplayEvent.course ? (
-                                      <a className="underline decoration-white/35 underline-offset-4 hover:text-[#f6d77a]" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">
-                                        {currentSessionDisplayEvent.course}
-                                      </a>
-                                    ) : null}
-                                    {currentSessionDisplayEvent.course && currentSessionDisplayEvent.location ? <span> - </span> : null}
-                                    {currentSessionDisplayEvent.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
-                                  </div>
-                                ) : null}
-                                <div className="flex flex-wrap gap-1.5 text-[11px] font-medium text-white/85">
-                                  <span className="rounded-full bg-white/12 px-2.5 py-0.5">{leaderboard.length} teams</span>
-                                  {currentSessionDisplayEvent?.dateLabel ? <span className="rounded-full bg-white/12 px-2.5 py-0.5">{currentSessionDisplayEvent.dateLabel}</span> : null}
-                                  <span className="rounded-full bg-white/12 px-2.5 py-0.5">Updated {resultsUpdatedLabel}</span>
-                                </div>
-                              </div>
-                                  <div className="flex max-w-[520px] flex-wrap items-center justify-end gap-2">
-                                     {canManageLeague ? (
-                                       resultsFinalized ? (
-                                         <button className="rounded-full border border-[#f6d77a]/60 bg-white/90 px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={reopenFinalizedResults}>
-                                           Reopen Results
-                                         </button>
-                                       ) : (
-                                         <>
-                                           <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>
-                                             {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                           </button>
-                                           <button className="rounded-full border border-white/30 bg-[#173c31] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>
-                                             Finalize Results
-                                           </button>
-                                         </>
-                                       )
-                                      ) : (
-                                       <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>
-                                         {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                       </button>
-                                     )}
-                                     {canEditResultPositions ? <button className="rounded-full border border-white/30 bg-white/12 px-3 py-1.5 text-sm font-semibold text-white" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
-                                     {currentSession.event_id ? <button className="rounded-full border border-white/30 bg-white/12 px-3 py-1.5 text-sm font-semibold text-white" onClick={openTournamentLeaderboard}>View Tournament Leaderboard</button> : null}
-                                     <span className="rounded-full bg-[#f7f2e9] px-3 py-1.5 text-xs text-[#4c5b4d]">{busy === "Pulling leaderboard..." ? "Fetching ESPN..." : resultsFinalized ? "Finalized" : statusMessage}</span>
-                               </div>
-                           </div>
-                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                          {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
+                  <div className="grid gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/10 bg-[#e0eee4] px-3 py-2">
+                      <div className="flex flex-wrap gap-2">
+                        {canManageLeague ? (
+                          resultsFinalized ? (
+                            <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
+                          ) : (
+                            <>
+                              <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
+                              <button className="rounded-full bg-[#174a35] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>Finalize Results</button>
+                            </>
+                          )
+                        ) : (
+                          <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
+                        )}
+                        {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
+                      </div>
+                      <span className="text-xs text-[#617061]">{busy === "Pulling leaderboard..." ? "Fetching the latest tournament positions..." : resultsFinalized ? "Results finalized" : statusMessage}</span>
+                    </div>
+                    <div className="grid items-start gap-2 xl:grid-cols-4">
+                      <div className="grid gap-2 md:grid-cols-2 xl:col-span-3 xl:grid-cols-3">
+                          {!leaderboard.length ? <div className="rounded-xl border border-black/10 bg-[#f7f2e9] p-4 text-[#617061] xl:col-span-3">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
                           <div key={entry.team.id} className={`grid gap-1.5 rounded-2xl p-2.5 text-[#1f2a1d] shadow-[0_10px_22px_rgba(15,25,18,0.12)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
                             <div className="flex items-start justify-between gap-2">
                               <div>
@@ -3684,8 +3678,37 @@ export default function Page() {
                             </div>
                           </div>
                         ))}
+                      </div>
+
+                      <aside className="overflow-hidden rounded-2xl border border-black/10 bg-white shadow-[0_10px_22px_rgba(15,25,18,0.1)] xl:sticky xl:top-4">
+                        <div className="flex items-center justify-between gap-2 bg-[#174a35] px-3 py-2.5 text-white">
+                          <div>
+                            <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-white/70">Tournament</div>
+                            <strong className="text-sm">Live Leaderboard</strong>
+                          </div>
+                          <div className="flex gap-1">
+                            <button className="rounded-full bg-white/12 px-2.5 py-1 text-[11px] font-semibold text-white disabled:opacity-50" disabled={tournamentLeaderboardLoading} onClick={() => loadTournamentLeaderboard(false)}>{tournamentLeaderboardLoading ? "..." : "Refresh"}</button>
+                            <button className="rounded-full bg-[#f6d77a] px-2.5 py-1 text-[11px] font-semibold text-[#1f2a1d]" onClick={openTournamentLeaderboard}>Expand</button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-[42px_minmax(0,1fr)_42px] gap-1 border-b border-black/10 bg-[#f2eadf] px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.1em] text-[#617061]">
+                          <span>Pos</span><span>Golfer</span><span className="text-right">Score</span>
+                        </div>
+                        <div className="max-h-[720px] overflow-y-auto">
+                          {tournamentLeaderboardLoading && !tournamentLeaderboardRows.length ? (
+                            <div className="p-4 text-center text-sm text-[#617061]">Loading leaderboard...</div>
+                          ) : !tournamentLeaderboardRows.length ? (
+                            <div className="p-4 text-center text-sm text-[#617061]">Leaderboard not available yet.</div>
+                          ) : tournamentLeaderboardRows.map((row, index) => (
+                            <div key={`${row.name}-side-${index}`} className={`grid grid-cols-[42px_minmax(0,1fr)_42px] items-center gap-1 border-b border-black/5 px-2 py-1.5 text-xs last:border-b-0 ${index < 3 ? "bg-[#f9f4df]" : "bg-white"}`}>
+                              <strong className="text-[#1a5c3a]">{row.positionLabel}</strong>
+                              <span className="truncate font-medium">{row.name}</span>
+                              <span className={`text-right font-semibold ${totalColorClass(row.total)}`}>{row.total ?? "-"}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </aside>
                     </div>
-                  </div>
                   </div>
                 ) : null}
 
