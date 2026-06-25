@@ -664,7 +664,22 @@ function buildLeaderboard(competitors: EspnCompetitor[], eventCompleted = false)
     leaderboard[normalizeName(entry.name)] = lastPosition;
   });
 
-  return { positions: leaderboard, totals };
+  const positionCounts = Object.values(leaderboard).reduce<Record<number, number>>((counts, position) => {
+    if (position) counts[position] = (counts[position] ?? 0) + 1;
+    return counts;
+  }, {});
+  const rows = rankedPlayers.map((entry) => {
+    const position = leaderboard[normalizeName(entry.name)] ?? null;
+    return {
+      name: entry.name,
+      position,
+      positionLabel: position ? `${(positionCounts[position] ?? 0) > 1 ? "T" : ""}${position}` : entry.total ?? entry.thru ?? "-",
+      total: entry.total,
+      thru: entry.thru,
+    };
+  });
+
+  return { positions: leaderboard, totals, rows };
 }
 
 function parseOddsFromArticle(articleHtml: string) {
@@ -1066,6 +1081,7 @@ export async function GET(req: NextRequest) {
           eventName,
           leaderboard: liveLeaderboard.positions,
           totals: liveLeaderboard.totals,
+          rows: liveLeaderboard.rows,
           source: scoreboardUrl,
         });
       }
