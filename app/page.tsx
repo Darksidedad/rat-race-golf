@@ -944,10 +944,6 @@ export default function Page() {
       return { team, playerScores, total, countingKeys };
     }).sort((a, b) => b.total - a.total);
   }, [assignedTeams, currentSession?.current_positions, currentSession?.current_totals, picks]);
-  const resultsUpdatedLabel = useMemo(() => {
-    if (!currentSession?.updated_at) return "Not updated yet";
-    return new Date(currentSession.updated_at).toLocaleString();
-  }, [currentSession?.updated_at]);
   const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isLeagueAdmin || currentTeamOnClock.owner_user_id === user.id);
   const canManageLeague = !!user && isLeagueAdmin;
   const canManagePermissions = !!user && (isSiteAdmin || isCommissioner);
@@ -3065,10 +3061,7 @@ export default function Page() {
 
       <div className="mx-auto grid max-w-[1880px] gap-5 lg:grid-cols-[300px_1fr]">
         <section className="rrg-card rounded-3xl p-5 lg:sticky lg:top-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <h2 className="m-0 font-[Georgia] text-2xl">{canManageLeague ? "New Draft" : "League Hub"}</h2>
-            <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{sessions.length} saved</span>
-          </div>
+          {!canManageLeague ? <h2 className="mb-4 mt-0 font-[Georgia] text-2xl">League Hub</h2> : null}
             {canManageLeague ? (
               <div className="grid min-w-0 gap-3">
                 <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 font-semibold text-white" onClick={() => setNewDraftModalOpen(true)}>New Draft</button>
@@ -3168,7 +3161,6 @@ export default function Page() {
                     {currentSessionDisplayEvent?.course ? <a className="font-medium text-[#1a5c3a] underline decoration-[#1a5c3a]/25 underline-offset-2" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">{currentSessionDisplayEvent.course}</a> : null}
                     {currentSessionDisplayEvent?.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
                     {currentSessionDisplayEvent?.dateLabel ? <span>{currentSessionDisplayEvent.dateLabel}</span> : null}
-                    <span>Updated {resultsUpdatedLabel}</span>
                   </div>
                 ) : null}
               </div>
@@ -3617,7 +3609,8 @@ export default function Page() {
                 {activeRoomTab === "results" ? (
                   <div className="grid gap-3">
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-black/10 bg-[#e0eee4] px-3 py-2">
-                      <div className="flex flex-wrap gap-2">
+                      <span className="text-xs text-[#617061]">{busy === "Pulling leaderboard..." ? "Fetching the latest tournament positions..." : resultsFinalized ? "Results finalized" : statusMessage}</span>
+                      <div className="ml-auto flex flex-wrap justify-end gap-2">
                         {canManageLeague ? (
                           resultsFinalized ? (
                             <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
@@ -3632,7 +3625,6 @@ export default function Page() {
                         )}
                         {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
                       </div>
-                      <span className="text-xs text-[#617061]">{busy === "Pulling leaderboard..." ? "Fetching the latest tournament positions..." : resultsFinalized ? "Results finalized" : statusMessage}</span>
                     </div>
                     <div className="grid items-start gap-2 xl:grid-cols-4">
                       <div className="grid gap-2 md:grid-cols-2 xl:col-span-3 xl:grid-cols-3">
@@ -3691,8 +3683,8 @@ export default function Page() {
                             <button className="rounded-full bg-[#f6d77a] px-2.5 py-1 text-[11px] font-semibold text-[#1f2a1d]" onClick={openTournamentLeaderboard}>Expand</button>
                           </div>
                         </div>
-                        <div className="grid grid-cols-[42px_minmax(0,1fr)_42px] gap-1 border-b border-black/10 bg-[#f2eadf] px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.1em] text-[#617061]">
-                          <span>Pos</span><span>Golfer</span><span className="text-right">Score</span>
+                        <div className="grid grid-cols-[38px_minmax(0,1fr)_38px_42px] gap-1 border-b border-black/10 bg-[#f2eadf] px-2 py-1.5 text-[9px] font-bold uppercase tracking-[0.08em] text-[#617061]">
+                          <span>Pos</span><span>Golfer</span><span className="text-right">Score</span><span className="text-right">Thru</span>
                         </div>
                         <div className="max-h-[720px] overflow-y-auto">
                           {tournamentLeaderboardLoading && !tournamentLeaderboardRows.length ? (
@@ -3700,10 +3692,11 @@ export default function Page() {
                           ) : !tournamentLeaderboardRows.length ? (
                             <div className="p-4 text-center text-sm text-[#617061]">Leaderboard not available yet.</div>
                           ) : tournamentLeaderboardRows.map((row, index) => (
-                            <div key={`${row.name}-side-${index}`} className={`grid grid-cols-[42px_minmax(0,1fr)_42px] items-center gap-1 border-b border-black/5 px-2 py-1.5 text-xs last:border-b-0 ${index < 3 ? "bg-[#f9f4df]" : "bg-white"}`}>
+                            <div key={`${row.name}-side-${index}`} className={`grid grid-cols-[38px_minmax(0,1fr)_38px_42px] items-center gap-1 border-b border-black/5 px-2 py-1.5 text-xs last:border-b-0 ${index < 3 ? "bg-[#f9f4df]" : "bg-white"}`}>
                               <strong className="text-[#1a5c3a]">{row.positionLabel}</strong>
                               <span className="truncate font-medium">{row.name}</span>
                               <span className={`text-right font-semibold ${totalColorClass(row.total)}`}>{row.total ?? "-"}</span>
+                              <span className="text-right text-[#617061]">{row.thru ?? "-"}</span>
                             </div>
                           ))}
                         </div>
