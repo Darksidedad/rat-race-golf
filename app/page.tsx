@@ -387,13 +387,6 @@ function getAssignedActiveTeams(teams: DraftTeam[]) {
   return teams.filter((team) => team.draft_slot !== null).sort((a, b) => (a.draft_slot ?? 0) - (b.draft_slot ?? 0));
 }
 
-function nextAvailableDraftSlot(teams: DraftTeam[]) {
-  const usedSlots = new Set(teams.map((team) => team.draft_slot).filter((slot): slot is number => slot !== null));
-  let nextSlot = 1;
-  while (usedSlots.has(nextSlot)) nextSlot += 1;
-  return nextSlot;
-}
-
 function hasValidDraftOrder(teams: DraftTeam[]) {
   const assigned = getAssignedActiveTeams(teams);
   return !!assigned.length && assigned.every((team, index) => team.draft_slot === index + 1);
@@ -869,7 +862,6 @@ export default function Page() {
       if (aOdds !== bOdds) return aOdds - bOdds;
       return a.localeCompare(b);
     }), [allPlayers, draftedKeys, deferredFilter, displayOddsByPlayer]);
-  const unassignedTeams = useMemo(() => teams.filter((team) => team.draft_slot === null).sort((a, b) => a.name.localeCompare(b.name)), [teams]);
   const totalPicks = assignedTeams.length * ROUNDS;
   const draftComplete = totalPicks > 0 && picks.length >= totalPicks;
   const currentRound = assignedTeams.length ? Math.floor(picks.length / assignedTeams.length) + 1 : 0;
@@ -2319,13 +2311,6 @@ export default function Page() {
     if (!importedField) await loadSessions();
   }
 
-  async function assignNextPick(team: DraftTeam) {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can change the draft order.");
-    const nextSlot = nextAvailableDraftSlot(teams);
-    await updateTeam(team.id, { draft_slot: nextSlot, active: true }, `${team.name} is now pick ${nextSlot}.`);
-    await loadSession(selectedSessionId, false);
-  }
-
   async function normalizeDraftOrder() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can repair the draft order.");
     const orderedTeams = getAssignedActiveTeams(teams);
@@ -2336,36 +2321,6 @@ export default function Page() {
       }
     }
     setStatusMessage("Repaired the draft order.");
-    await loadSession(selectedSessionId, false);
-  }
-
-  async function removeFromOrder(team: DraftTeam) {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can remove teams from the draft order.");
-    if (team.draft_slot === null) return;
-    const removedSlot = team.draft_slot;
-    await updateTeam(team.id, { draft_slot: null, active: false }, `${team.name} was removed from the draft order.`);
-    for (const entry of teams.filter((item) => item.id !== team.id && item.draft_slot !== null && item.draft_slot > removedSlot)) {
-      await updateTeam(entry.id, { draft_slot: (entry.draft_slot ?? 1) - 1 });
-    }
-    await loadSession(selectedSessionId, false);
-  }
-
-  async function moveTeam(team: DraftTeam, direction: "up" | "down") {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can reorder teams.");
-    if (team.draft_slot === null) return;
-    const target = direction === "up" ? team.draft_slot - 1 : team.draft_slot + 1;
-    const swapTeam = assignedTeams.find((entry) => entry.draft_slot === target);
-    if (!swapTeam) return;
-    await updateTeam(team.id, { draft_slot: target });
-    await updateTeam(swapTeam.id, { draft_slot: team.draft_slot });
-    setStatusMessage(`Moved ${team.name} to pick ${target}.`);
-    await loadSession(selectedSessionId, false);
-  }
-
-  async function clearDraftOrder() {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can clear the draft order.");
-    for (const team of assignedTeams) await updateTeam(team.id, { draft_slot: null, active: false });
-    setStatusMessage("Cleared the draft order.");
     await loadSession(selectedSessionId, false);
   }
 
@@ -3021,50 +2976,29 @@ export default function Page() {
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                     <h3 className="mb-4 mt-0 font-[Georgia] text-xl">Tournament Setup</h3>
                     <div className="grid gap-3">
-                        <div className="mb-1 flex items-center justify-between gap-3">
-                          <h3 className="m-0 font-[Georgia] text-xl">Teams And Draft Order</h3>
-                          <div className="flex items-center gap-2">
-                            {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{assignedTeams.length} active</span>
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={clearDraftOrder}>Clear Order</button>
-                          </div>
-                        </div>
-                        <div className="grid items-start gap-4 xl:grid-cols-[minmax(320px,0.9fr)_minmax(360px,1.1fr)]">
-                            <div className="grid content-start self-start gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                  <h4 className="m-0 font-[Georgia] text-lg">Available Teams</h4>
-                                  <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{unassignedTeams.length} left</span>
-                                </div>
-                            <div className={`grid content-start gap-2 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2 ${unassignedTeams.length > 5 ? "max-h-[420px] overflow-auto" : ""}`}>
-                              {!unassignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-sm text-[#617061]">Every team has been assigned to the draft order.</div> : unassignedTeams.map((team) => (
-                                <div key={team.id} className="grid min-h-[56px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/90 px-3 py-2.5">
-                                  <span className="truncate font-medium">{team.name}</span>
-                                  <button className="w-[74px] rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white" onClick={() => assignNextPick(team)}>Assign</button>
-                                </div>
-                              ))}
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h3 className="m-0 font-[Georgia] text-xl">Teams Playing</h3>
+                              <div className="mt-1 text-sm text-[#617061]">The draft order was set when this room was created.</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{assignedTeams.length} teams</span>
+                              {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
                             </div>
                           </div>
-                          <div className="grid min-h-[430px] gap-3 rounded-3xl border border-black/10 bg-white/75 p-4">
-                            <div className="flex items-center justify-between gap-3">
-                              <h4 className="m-0 font-[Georgia] text-lg">Draft Order</h4>
-                              <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{assignedTeams.length} assigned</span>
-                            </div>
-                            <div className="grid content-start gap-2">
-                              {!assignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-4 text-sm text-[#617061]">Assign teams from the left to build the draft order.</div> : assignedTeams.map((team) => (
-                                <div key={team.id} className="grid min-h-[78px] gap-2 rounded-2xl border border-black/10 bg-white/90 px-3 py-2.5">
-                                  <div className="flex items-center justify-between gap-3">
-                                    <strong className="truncate">#{team.draft_slot} {team.name}</strong>
-                                    <span className="text-xs text-[#617061]">Pick {team.draft_slot}</span>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2">
-                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === 1} onClick={() => moveTeam(team, "up")}>Up</button>
-                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" disabled={team.draft_slot === assignedTeams.length} onClick={() => moveTeam(team, "down")}>Down</button>
-                                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={() => removeFromOrder(team)}>Remove</button>
-                                  </div>
+                          {!assignedTeams.length ? (
+                            <div className="rounded-xl bg-white/75 px-3 py-3 text-sm text-[#617061]">No teams were included in this draft.</div>
+                          ) : (
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                              {assignedTeams.map((team) => (
+                                <div key={team.id} className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-xl border border-black/10 bg-white/90 px-3 py-2.5">
+                                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#1a5c3a] text-xs font-semibold text-white">{team.draft_slot}</span>
+                                  <strong className="truncate text-sm">{team.name}</strong>
                                 </div>
                               ))}
                             </div>
-                          </div>
+                          )}
                         </div>
                         <div className="my-1 h-px bg-black/10" />
                         <label className="grid gap-1 text-sm text-[#617061]">
