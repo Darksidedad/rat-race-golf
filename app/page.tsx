@@ -553,6 +553,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 
 export default function Page() {
   const draftFlowRef = useRef<HTMLDivElement | null>(null);
+  const sessionDateLoadRequestRef = useRef(0);
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -569,6 +570,7 @@ export default function Page() {
   const [events, setEvents] = useState<EventOption[]>([]);
   const [sessionEventDates, setSessionEventDates] = useState<Record<string, string>>({});
   const [resolvedSessionSeasons, setResolvedSessionSeasons] = useState<Record<string, number>>({});
+  const [sessionDatesLoaded, setSessionDatesLoaded] = useState(false);
   const [expandedSessionYears, setExpandedSessionYears] = useState<number[]>([]);
   const [currentSessionEventDetails, setCurrentSessionEventDetails] = useState<EventOption | null>(null);
   const [newDraftTour, setNewDraftTour] = useState("pga");
@@ -763,14 +765,18 @@ export default function Page() {
     void loadSessions();
   }, [authChecked, user, currentLeagueId]);
   useEffect(() => {
-    if (!selectedSessionId && featuredSession?.id) setSelectedSessionId(featuredSession.id);
-  }, [featuredSession?.id, selectedSessionId]);
+    if (sessionDatesLoaded && !selectedSessionId && featuredSession?.id) setSelectedSessionId(featuredSession.id);
+  }, [featuredSession?.id, selectedSessionId, sessionDatesLoaded]);
 
   useEffect(() => {
     if (!sessions.length) {
+      sessionDateLoadRequestRef.current += 1;
       setSessionEventDates({});
+      setResolvedSessionSeasons({});
+      setSessionDatesLoaded(false);
       return;
     }
+    setSessionDatesLoaded(false);
     void loadSessionEventDates(sessions);
   }, [sessions]);
 
@@ -933,6 +939,12 @@ export default function Page() {
   const canManageLeague = !!user && isLeagueAdmin;
   const canManagePermissions = !!user && (isSiteAdmin || isCommissioner);
   const resultsFinalized = currentSession?.status === "finalized";
+  const setupHasEvent = !!currentSession?.event_id;
+  const setupHasTeams = assignedTeams.length > 0 && validDraftOrder;
+  const setupHasField = allPlayers.length > 0;
+  const setupHasOdds = Object.keys(displayOddsByPlayer).length > 0;
+  const setupReady = setupHasEvent && setupHasTeams && setupHasField;
+  const tournamentIdentityLocked = picks.length > 0;
   const ownedTeamNames = currentUsersTeams.map((team) => team.name);
   const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
   const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
@@ -1815,6 +1827,7 @@ export default function Page() {
   }
 
   async function loadSessionEventDates(sessionList: DraftSession[]) {
+    const requestId = ++sessionDateLoadRequestRef.current;
     const tours = Array.from(new Set(sessionList.map((session) => session.event_tour ?? "pga")));
     const seasons = Array.from(new Set([
       ...HISTORICAL_SEASONS,
@@ -1839,8 +1852,11 @@ export default function Page() {
       if (event?.startDate) dateEntries.push([session.id, event.startDate]);
       if (event?.season) seasonEntries.push([session.id, event.season]);
     });
-    setSessionEventDates(Object.fromEntries(dateEntries));
-    setResolvedSessionSeasons(Object.fromEntries(seasonEntries));
+    if (requestId === sessionDateLoadRequestRef.current) {
+      setSessionEventDates(Object.fromEntries(dateEntries));
+      setResolvedSessionSeasons(Object.fromEntries(seasonEntries));
+      setSessionDatesLoaded(true);
+    }
   }
 
   async function loadSession(sessionId: string, setLoading = true) {
@@ -2956,16 +2972,16 @@ export default function Page() {
             </div>
         </section>
 
-        <section className="rrg-card rounded-3xl p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
+        <section className={`rrg-card rounded-3xl ${activeRoomTab === "draft" ? "p-4" : "p-5"}`}>
+            <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-4"} flex items-center justify-between gap-3`}>
               <h2 className="m-0 font-[Georgia] text-2xl">{currentSession ? currentSession.name : "Pick a session"}</h2>
               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
             </div>
 
             {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
-              <div className="grid gap-5">
-                <div className="flex flex-wrap gap-3">
-                  {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Setup</button> : null}
+              <div className={activeRoomTab === "draft" ? "grid gap-3" : "grid gap-5"}>
+                <div className="flex flex-wrap gap-2">
+                  {canManageLeague ? <button className={`rounded-full px-4 py-2 ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                   <button className={`rounded-full px-4 py-2 ${activeRoomTab === "season" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("season")}>Season</button>
@@ -2974,13 +2990,111 @@ export default function Page() {
                 {canManageLeague && activeRoomTab === "setup" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                    <h3 className="mb-4 mt-0 font-[Georgia] text-xl">Tournament Setup</h3>
-                    <div className="grid gap-3">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="m-0 font-[Georgia] text-xl">Tournament Settings</h3>
+                          <div className="mt-1 text-sm text-[#617061]">Confirm this tournament is ready, then manage its field only when something needs attention.</div>
+                        </div>
+                        <span className={`rounded-full px-3 py-1 text-xs font-semibold ${setupReady ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f2eadf] text-[#6a5940]"}`}>
+                          {setupReady ? (picks.length ? "Draft underway" : "Ready to draft") : "Setup needed"}
+                        </span>
+                      </div>
+
+                      <div className="grid gap-4">
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h4 className="m-0 font-[Georgia] text-lg">Setup Status</h4>
+                              <div className="mt-1 text-sm text-[#617061]">{setupReady ? "The required tournament details are in place." : "Complete the items marked Needs attention before drafting."}</div>
+                            </div>
+                            <span className="text-sm font-semibold text-[#1a5c3a]">{[setupHasEvent, setupHasTeams, setupHasField].filter(Boolean).length}/3 required</span>
+                          </div>
+                          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                            {[
+                              { label: "Tournament linked", complete: setupHasEvent, required: true },
+                              { label: "Teams ordered", complete: setupHasTeams, required: true },
+                              { label: "Player field loaded", complete: setupHasField, required: true },
+                              { label: "Odds loaded", complete: setupHasOdds, required: false },
+                            ].map(({ label, complete, required }) => (
+                              <div key={label} className="flex min-w-0 items-center justify-between gap-2 rounded-xl border border-black/10 bg-white px-3 py-2.5 text-sm">
+                                <span className="truncate font-medium text-[#1f2a1d]">{label}</span>
+                                <span className={`shrink-0 text-xs font-semibold ${complete ? "text-[#1a5c3a]" : required ? "text-[#9d4b2f]" : "text-[#7b6d5b]"}`}>
+                                  {complete ? "Ready" : required ? "Needs attention" : "Optional"}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
+                          <div>
+                            <h4 className="m-0 font-[Georgia] text-lg">Tournament</h4>
+                            <div className="mt-1 text-sm text-[#617061]">The linked event supplies the field and leaderboard data.</div>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            <label className="grid gap-1 text-sm text-[#617061]">
+                              <span className="font-medium text-[#1f2a1d]">Tournament Season</span>
+                              <select
+                                className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 disabled:bg-[#f4efe6] disabled:text-[#617061]"
+                                disabled={tournamentIdentityLocked}
+                                value={resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}
+                                onChange={(event) => {
+                                  const season = Number(event.target.value);
+                                  setNewDraftSeason(season);
+                                  void updateSession(
+                                    { event_season: season, event_id: null, event_name: null, manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)) },
+                                    `Season changed to ${season}. Select the tournament and refresh the field.`
+                                  );
+                                }}
+                              >
+                                {HISTORICAL_SEASONS.map((season) => <option key={season} value={season}>{season}</option>)}
+                              </select>
+                            </label>
+                            <label className="grid gap-1 text-sm text-[#617061]">
+                              <span className="font-medium text-[#1f2a1d]">Linked Tournament</span>
+                              <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3 disabled:bg-[#f4efe6] disabled:text-[#617061]" disabled={tournamentIdentityLocked} value={currentSession.event_id ?? ""} onChange={(event) => {
+                                const selectedEvent = events.find((item) => item.id === event.target.value) ?? null;
+                                const season = selectedEvent?.season ?? newDraftSeason;
+                                void updateSession(
+                                  {
+                                    event_id: event.target.value || null,
+                                    event_name: selectedEvent?.name ?? null,
+                                    event_tour: newDraftTour,
+                                    event_season: season,
+                                    manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)),
+                                  },
+                                  `Linked this session to ${selectedEvent?.name ?? "the selected event"}.`
+                                );
+                              }}>
+                                <option value="">No event selected</option>
+                                {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
+                              </select>
+                            </label>
+                          </div>
+                          {tournamentIdentityLocked ? <div className="rounded-xl border border-[#9d4b2f]/15 bg-[#f8eee8] px-3 py-2 text-sm text-[#7a4937]">Tournament identity is locked after the first pick. Undo the draft picks before linking a different event.</div> : null}
+                          {selectedCurrentSessionEvent ? (
+                            <div className="grid min-w-0 gap-2 overflow-hidden rounded-xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061] md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                              <div className="min-w-0">
+                                <div className="truncate font-semibold text-[#1f2a1d]">{selectedCurrentSessionEvent.name}</div>
+                                <div className="truncate">{selectedCurrentSessionEvent.course ?? "Course TBD"}{selectedCurrentSessionEvent.location ? ` - ${selectedCurrentSessionEvent.location}` : ""}</div>
+                              </div>
+                              <span className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedCurrentSessionEvent.dateLabel ?? "Date TBD"}</span>
+                            </div>
+                          ) : null}
+                          <label className="flex items-start gap-3 rounded-xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
+                            <input className="mt-1" type="checkbox" checked={sessionCountsForSeason(currentSession)} onChange={(event) => setSessionCountsForSeason(currentSession, event.target.checked)} />
+                            <span>
+                              <span className="block font-semibold text-[#1f2a1d]">Count toward season statistics</span>
+                              <span className="block text-[#617061]">Turn this off for side events that should keep their own leaderboard without affecting league totals.</span>
+                            </span>
+                          </label>
+                        </div>
+
                         <div className="grid gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-4">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                              <h3 className="m-0 font-[Georgia] text-xl">Teams Playing</h3>
-                              <div className="mt-1 text-sm text-[#617061]">The draft order was set when this room was created.</div>
+                              <h4 className="m-0 font-[Georgia] text-lg">Draft Summary</h4>
+                              <div className="mt-1 text-sm text-[#617061]">The playing teams and order were set when this room was created.</div>
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{assignedTeams.length} teams</span>
@@ -3000,104 +3114,36 @@ export default function Page() {
                             </div>
                           )}
                         </div>
-                        <div className="my-1 h-px bg-black/10" />
-                        <label className="grid gap-1 text-sm text-[#617061]">
-                          <span className="font-medium text-[#1f2a1d]">Tournament Season</span>
-                          <select
-                            className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3"
-                            value={resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}
-                            onChange={(event) => {
-                              const season = Number(event.target.value);
-                              setNewDraftSeason(season);
-                              void updateSession(
-                                { event_season: season, event_id: null, event_name: null, manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)) },
-                                `Season changed to ${season}. Select the tournament and refresh the field.`
-                              );
-                            }}
-                          >
-                            {HISTORICAL_SEASONS.map((season) => <option key={season} value={season}>{season}</option>)}
-                          </select>
-                        </label>
-                        <select className="w-full min-w-0 max-w-full rounded-xl border border-black/15 bg-white px-3 py-3" value={currentSession.event_id ?? ""} onChange={(event) => {
-                          const selectedEvent = events.find((item) => item.id === event.target.value) ?? null;
-                          const season = selectedEvent?.season ?? newDraftSeason;
-                          void updateSession(
-                            {
-                              event_id: event.target.value || null,
-                              event_name: selectedEvent?.name ?? null,
-                              event_tour: newDraftTour,
-                              event_season: season,
-                              manual_leaderboard_input: manualLeaderboardWithEventSeason(currentSession.manual_leaderboard_input, season, sessionCountsForSeason(currentSession)),
-                            },
-                            `Linked this session to ${selectedEvent?.name ?? "the selected event"}.`
-                          );
-                        }}>
-                          <option value="">No event selected</option>
-                          {events.map((event) => <option key={event.id} value={event.id}>{formatEventDropdownOption(event)}</option>)}
-                        </select>
-                        {selectedCurrentSessionEvent ? (
-                          <div className="grid min-w-0 gap-2 overflow-hidden rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
-                            <div className="min-w-0 truncate text-base font-semibold text-[#1f2a1d]">{selectedCurrentSessionEvent.name}</div>
-                            <div className="min-w-0">
-                              <div className="truncate">{selectedCurrentSessionEvent.course ?? "Course TBD"}</div>
-                              {selectedCurrentSessionEvent.location ? <div className="truncate">{selectedCurrentSessionEvent.location}</div> : null}
-                            </div>
-                            <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedCurrentSessionEvent.dateLabel ?? "Date TBD"}</div>
-                          </div>
-                        ) : null}
-                        <label className="flex items-start gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
-                          <input className="mt-1" type="checkbox" checked={sessionCountsForSeason(currentSession)} onChange={(event) => setSessionCountsForSeason(currentSession, event.target.checked)} />
-                          <span>
-                            <span className="block font-semibold text-[#1f2a1d]">Count this tournament toward season stats</span>
-                            <span className="block text-[#617061]">Side events keep their leaderboard but do not add points, wins, or top-three finishes to the season table.</span>
-                          </span>
-                        </label>
-                      <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <h3 className="m-0 font-[Georgia] text-xl">Player Pool And Odds</h3>
-                            <div className="mt-1 text-sm text-[#617061]">
-                              The ESPN field imports automatically. Use this only to re-import or repair the field if something looks wrong.
-                            </div>
-                          </div>
-                          <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{allPlayers.length} draftable</span>
-                        </div>
-                        <div className="grid gap-2 rounded-2xl bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061] md:grid-cols-2">
-                          <div><span className="font-semibold text-[#1f2a1d]">Field refreshed:</span> {formatRefreshTime(currentSession.field_refreshed_at)}</div>
-                          <div><span className="font-semibold text-[#1f2a1d]">Odds refreshed:</span> {formatRefreshTime(currentSession.odds_refreshed_at)}</div>
-                          {currentSession.odds_source ? <div className="min-w-0 md:col-span-2"><span className="font-semibold text-[#1f2a1d]">Odds source:</span> <a className="break-words text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">{currentSession.odds_source}</a></div> : null}
-                          <div className="md:col-span-2"><span className="font-semibold text-[#1f2a1d]">Field status:</span> {picks.length || currentSession.field_locked_at ? `Locked${currentSession.field_locked_at ? ` ${formatRefreshTime(currentSession.field_locked_at)}` : " after drafting started"}` : "Refreshable until the first pick"}</div>
-                        </div>
-                        <div className="flex flex-wrap gap-3">
-                          <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromEspn}>Refresh Field & Odds</button>
-                          <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white disabled:opacity-50" disabled={!!picks.length} onClick={savePlayerPool}>Save Manual Edits</button>
-                        </div>
-                        <textarea className="min-h-72 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm disabled:bg-[#f4efe6] disabled:text-[#617061]" disabled={!!picks.length} value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
-                        <div className="text-sm text-[#617061]">
-                          {picks.length ? "The field is locked because drafting has started. Undo picks before changing the player pool." : "For team events, keep both players on the same line with a slash so they draft together."}
-                        </div>
-                      </div>
-                        <div className="my-1 h-px bg-black/10" />
-                      <div className="grid gap-4 xl:grid-cols-[minmax(320px,0.85fr)_minmax(420px,1.15fr)]">
+
                         <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
-                          <div className="flex items-center justify-between gap-3">
-                            <h3 className="m-0 font-[Georgia] text-xl">Scoring</h3>
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#6a5940]">Best 3 of 4 count</span>
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h4 className="m-0 font-[Georgia] text-lg">Field & Odds</h4>
+                              <div className="mt-1 text-sm text-[#617061]">ESPN imports these automatically. Refresh only when the field or odds look incomplete.</div>
+                            </div>
+                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{allPlayers.length} golfers</span>
+                          </div>
+                          <div className="grid gap-2 rounded-xl bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061] sm:grid-cols-2 xl:grid-cols-4">
+                            <div><span className="block text-xs">Field refreshed</span><strong className="text-[#1f2a1d]">{formatRefreshTime(currentSession.field_refreshed_at)}</strong></div>
+                            <div><span className="block text-xs">Odds refreshed</span><strong className="text-[#1f2a1d]">{formatRefreshTime(currentSession.odds_refreshed_at)}</strong></div>
+                            <div><span className="block text-xs">Odds available</span><strong className="text-[#1f2a1d]">{Object.keys(displayOddsByPlayer).length}</strong></div>
+                            <div><span className="block text-xs">Field status</span><strong className="text-[#1f2a1d]">{picks.length || currentSession.field_locked_at ? "Locked" : "Editable"}</strong></div>
                           </div>
                           <div className="flex flex-wrap gap-3">
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-3 text-[#1a5c3a]" onClick={pullLeaderboard}>Pull ESPN Leaderboard</button>
-                            <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white" onClick={applyManualScores}>Apply Manual Scores</button>
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2.5 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromEspn}>Refresh Field & Odds</button>
+                            {currentSession.odds_source ? <a className="self-center text-sm text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">View odds source</a> : null}
                           </div>
-                          <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-3 py-2 text-sm text-[#617061]">
-                            {busy || statusMessage}
-                          </div>
-                          <div className="text-sm text-[#617061]">Use this area to load or correct tournament positions before everyone watches the live standings.</div>
+                          <details className="rounded-xl border border-black/10 bg-[#f7f2e9]">
+                            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-[#1f2a1d]">Advanced: edit field manually</summary>
+                            <div className="grid gap-3 border-t border-black/10 p-4">
+                              <textarea className="min-h-64 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm disabled:bg-[#f4efe6] disabled:text-[#617061]" disabled={!!picks.length} value={playerPoolDraft} onChange={(event) => setPlayerPoolDraft(event.target.value)} placeholder={"Examples:\nScottie Scheffler +450\nRory McIlroy / Shane Lowry +1200\nHossler/Ryder +8000"} />
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span className="text-sm text-[#617061]">{picks.length ? "Manual editing is locked after drafting starts." : "For team events, keep both players on one line separated by a slash."}</span>
+                                <button className="rounded-full bg-[#1a5c3a] px-4 py-2.5 text-white disabled:opacity-50" disabled={!!picks.length} onClick={savePlayerPool}>Save Manual Field</button>
+                              </div>
+                            </div>
+                          </details>
                         </div>
-                        <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
-                          <textarea className="min-h-52 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono" value={manualLeaderboardDraft} onChange={(event) => setManualLeaderboardDraft(event.target.value)} placeholder={"Example:\n1 Scottie Scheffler\nT2 Rory McIlroy\nCUT Jordan Spieth"} />
-                          <div className="text-sm text-[#617061]">Enter one player per line. Examples: `1 Scottie Scheffler`, `T2 Rory McIlroy`, `CUT Jordan Spieth`.</div>
-                        </div>
-                      </div>
                       </div>
                     </div>
                   </div>
@@ -3233,74 +3279,67 @@ export default function Page() {
                 ) : null}
 
                 {activeRoomTab === "draft" ? (
-                    <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                    <h3 className="mb-4 mt-0 font-[Georgia] text-xl">Live Draft</h3>
-                    <div className="grid gap-4">
-                        <div className="grid gap-3 rounded-2xl bg-[#d9eadf] p-4 text-[#1a5c3a]">
-                          <div className="font-semibold">
-                            {editingPick
-                              ? `Replacing ${editingPick.playerName} on ${editingPick.teamName}. Pick a replacement from the available golfer list.`
-                              : !validDraftOrder
-                                ? "The draft order needs to be repaired before you can make picks."
-                                : draftComplete
-                                  ? "The draft is complete. You can still score the results below."
-                                    : `${currentTeamOnClock?.name ?? "Nobody"} is on the clock for pick ${picks.length + 1}.${canDraftCurrentPick ? " You're live for this pick." : currentUsersTeams.length ? ` Your team${currentUsersTeams.length > 1 ? "s are" : " is"} ${ownedTeamNames.join(", ")}.` : " Watch live until your team is up."}`}
+                    <div className="rounded-2xl border border-black/10 bg-white/60 p-3">
+                    <div className="grid gap-3">
+                        <div className="grid gap-2 rounded-xl bg-[#d9eadf] px-3 py-2.5 text-[#1a5c3a] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+                          <div className="grid min-w-0 gap-1.5">
+                            <div className="font-semibold leading-tight">
+                              {editingPick
+                                ? `Replacing ${editingPick.playerName} on ${editingPick.teamName}. Pick a replacement below.`
+                                : !validDraftOrder
+                                  ? "The draft order needs to be repaired before picks can be made."
+                                  : draftComplete
+                                    ? "Draft complete. All picks are in."
+                                      : `${currentTeamOnClock?.name ?? "Nobody"} is on the clock for pick ${picks.length + 1}.${canDraftCurrentPick ? " You're live for this pick." : ""}`}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5 text-[11px] font-medium text-[#28523e]">
+                              <span className="rounded-full bg-white/70 px-2.5 py-0.5">{currentSession.event_name || "Event not linked"}</span>
+                              <span className="rounded-full bg-white/70 px-2.5 py-0.5">Round {draftComplete ? ROUNDS : currentRound || 0}</span>
+                              <span className="rounded-full bg-white/70 px-2.5 py-0.5">Pick {totalPicks ? `${Math.min(picks.length + 1, totalPicks)} / ${totalPicks}` : "0 / 0"}</span>
+                              <span className="rounded-full bg-white/70 px-2.5 py-0.5">{statusLabel(currentSession.status)}</span>
+                            </div>
                           </div>
-                          <div className="flex flex-wrap gap-2 text-xs font-medium text-[#28523e]">
-                            <span className="rounded-full bg-white/70 px-3 py-1">Event: {currentSession.event_name || "Not linked"}</span>
-                            <span className="rounded-full bg-white/70 px-3 py-1">Round: {draftComplete ? "Complete" : String(currentRound || 0)}</span>
-                            <span className="rounded-full bg-white/70 px-3 py-1">Pick: {totalPicks ? `${Math.min(picks.length + 1, totalPicks)} / ${totalPicks}` : "0 / 0"}</span>
-                            <span className="rounded-full bg-white/70 px-3 py-1">Clock: {draftComplete ? "Draft complete" : currentTeamOnClock?.name || "Set draft order"}</span>
-                            <span className="rounded-full bg-white/70 px-3 py-1">Status: {statusLabel(currentSession.status)}</span>
+                          <div className="flex flex-wrap gap-2 lg:justify-end">
+                            {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
+                            {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft</button> : null}
+                            {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={undoLastPick}>Undo Pick</button> : null}
+                            {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-3">
-                          {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Draft Order</button> : null}
-                        {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-4 py-2 font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft Remaining</button> : null}
-                        {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={undoLastPick}>Undo Last Pick</button> : null}
-                          {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-4 py-2 text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
-                      </div>
-                        <div className="grid items-start gap-5 xl:grid-cols-[minmax(330px,0.75fr)_minmax(0,1.25fr)] 2xl:grid-cols-[minmax(360px,0.7fr)_minmax(0,1.3fr)]">
-                          <div className="grid content-start self-start gap-3">
+                        <div className="grid items-start gap-4 xl:grid-cols-[minmax(310px,0.72fr)_minmax(0,1.28fr)] 2xl:grid-cols-[minmax(340px,0.68fr)_minmax(0,1.32fr)]">
+                          <div className="grid content-start self-start gap-2">
                           <div className="flex items-center justify-between gap-3">
-                            <h3 className="m-0 font-[Georgia] text-xl">Available Golfers</h3>
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
+                            <h3 className="m-0 font-[Georgia] text-lg">Available Golfers</h3>
+                            <span className="rounded-full bg-[#f2eadf] px-2.5 py-0.5 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
-                            {oddsSource || Object.keys(playerPoolOdds).length ? <div className="text-xs text-[#617061]">Ordered by win odds, lowest odds first. Odds can come from CBS Sports or your imported list.</div> : null}
-                          <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
-                          <div className="grid max-h-[520px] content-start gap-2 overflow-y-auto overflow-x-hidden rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 pr-2">
+                          <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
+                          <div className="grid max-h-[450px] content-start gap-1 overflow-y-auto overflow-x-hidden rounded-xl border border-black/10 bg-[#f7f2e9]/70 p-1.5">
                             {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
                               const oddsLabel = playerOddsLabel(player);
                               return (
-                                <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border px-3 py-2 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
+                                <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-2.5 py-1.5 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
                                     <div className="min-w-0">
-                                      <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                        <div className="whitespace-normal break-words font-medium leading-tight">{player}</div>
-                                        <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${oddsLabel ? "bg-[#f6d77a] text-[#1f2a1d]" : "bg-[#f2eadf] text-[#617061]"}`}>{oddsLabel ?? "No odds"}</span>
+                                      <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                                        <div className="whitespace-normal break-words text-sm font-medium leading-tight">{player}</div>
+                                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${oddsLabel ? "bg-[#f6d77a] text-[#1f2a1d]" : "bg-[#f2eadf] text-[#617061]"}`}>{oddsLabel ?? "No odds"}</span>
                                       </div>
                                     </div>
-                                    <button className="rounded-full bg-[#1a5c3a] px-3 py-1.5 text-sm text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
+                                    <button className="rounded-full bg-[#1a5c3a] px-2.5 py-1 text-xs text-white disabled:opacity-50" disabled={editingPick ? !canManageLeague : (!validDraftOrder || draftComplete || !canDraftCurrentPick)} onClick={() => editingPick ? replacePick(player) : makePick(player)}>{editingPick ? "Replace" : "Draft"}</button>
                                 </div>
                               );
                             })}
                           </div>
                         </div>
 
-                          <div className="grid min-w-0 gap-3">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <h3 className="m-0 font-[Georgia] text-xl">Draft Board</h3>
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Snake order</span>
-                          </div>
-                          <div className="rounded-3xl border border-[#1a5c3a]/15 bg-[#e0eee4] p-4 text-[#1a5c3a]">
-                            <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#28523e]">{draftComplete ? "Draft Complete" : "On The Clock"}</div>
-                            <div className="mt-1 font-[Georgia] text-3xl leading-tight">{draftComplete ? "All picks are in" : currentTeamOnClock?.name ?? "Set draft order"}</div>
-                            <div className="mt-2 flex flex-wrap gap-2 text-xs font-medium">
-                              <span className="rounded-full bg-white/70 px-3 py-1">Round {draftComplete ? ROUNDS : currentRound || 0}</span>
-                              <span className="rounded-full bg-white/70 px-3 py-1">Pick {totalPicks ? `${Math.min(picks.length + 1, totalPicks)} / ${totalPicks}` : "0 / 0"}</span>
-                              <span className="rounded-full bg-white/70 px-3 py-1">{currentRound % 2 === 0 ? "Snake moving right to left" : "Snake moving left to right"}</span>
+                          <div className="grid min-w-0 gap-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="m-0 font-[Georgia] text-lg">Draft Board</h3>
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                              <span className="rounded-full bg-[#e0eee4] px-2.5 py-0.5 font-semibold text-[#1a5c3a]">{draftComplete ? "Draft complete" : `${currentTeamOnClock?.name ?? "Set order"} on clock`}</span>
+                              <span className="rounded-full bg-[#f2eadf] px-2.5 py-0.5 text-[#617061]">Snake order</span>
                             </div>
                           </div>
-                          <div className="grid gap-2 rounded-3xl border border-black/10 bg-white/80 p-3">
+                          <div className="grid gap-1.5 rounded-2xl border border-black/10 bg-white/80 p-2">
                             <div className="flex items-center justify-between gap-3 px-1">
                               <div className="text-xs font-semibold uppercase tracking-[0.16em] text-[#617061]">Draft Flow</div>
                               <div className="text-xs text-[#617061]">Slide to review every pick</div>
@@ -3311,7 +3350,7 @@ export default function Page() {
                                   {draftPickTape.map((entry) => {
                                     const oddsLabel = entry.pick ? playerOddsLabel(entry.pick.player_name) : null;
                                     return (
-                                      <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: draftFlowCardWidth ? `${draftFlowCardWidth}px` : "150px" }} className={`grid min-h-[112px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-2xl border p-2 text-xs sm:p-3 sm:text-sm ${
+                                      <div key={entry.pickNumber} data-current-pick={entry.state === "current" ? "true" : undefined} data-pick-number={entry.pickNumber} style={{ flexBasis: draftFlowCardWidth ? `${draftFlowCardWidth}px` : "150px" }} className={`grid min-h-[84px] min-w-0 shrink-0 content-start gap-1 overflow-hidden rounded-xl border p-2 text-xs ${
                                         entry.state === "current"
                                           ? "border-[#1a5c3a]/70 bg-[#1a5c3a] text-white shadow-[0_14px_30px_rgba(26,92,58,0.25)] ring-2 ring-[#b7d9bd]"
                                           : entry.state === "complete"
@@ -3321,7 +3360,7 @@ export default function Page() {
                                         <div className={`text-[10px] font-semibold uppercase tracking-[0.14em] ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>Pick {entry.pickNumber}</div>
                                         <div className="break-words font-semibold leading-tight">{entry.team?.name}</div>
                                         {entry.pick ? (
-                                          <div className={`mt-1 grid gap-1 break-words rounded-xl px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
+                                          <div className={`grid gap-0.5 break-words rounded-lg px-2 py-1 text-xs leading-tight ${entry.state === "current" ? "bg-white/15" : "bg-white/75"}`}>
                                             <span>{entry.pick.player_name}</span>
                                             {oddsLabel ? <span className={`text-[11px] font-semibold ${entry.state === "current" ? "text-white/80" : "text-[#617061]"}`}>{oddsLabel}</span> : null}
                                           </div>
@@ -3337,37 +3376,37 @@ export default function Page() {
                               </div>
                             )}
                           </div>
-                            <div className="grid gap-3 overflow-x-hidden pr-0">
-                              <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div className="grid gap-2 overflow-x-hidden pr-0">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
                                 <h4 className="m-0 font-[Georgia] text-lg">Team Rosters</h4>
-                                <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{picks.length} of {totalPicks} picks made</span>
+                                <span className="rounded-full bg-[#f2eadf] px-2.5 py-0.5 text-xs text-[#617061]">{picks.length} of {totalPicks} picks made</span>
                               </div>
                             {!assignedTeams.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Set the draft order before using the board.</div> : (
-                              <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
+                              <div className="grid gap-2 lg:grid-cols-2 2xl:grid-cols-3">
                                 {teamDraftRosters.map(({ team, picks: teamPicks, isMine }) => (
-                                  <div key={team.id} className={`grid min-h-[190px] content-start gap-3 rounded-2xl border p-4 ${isMine ? "border-[#1a5c3a]/60 bg-[#e0eee4] shadow-[0_12px_26px_rgba(26,92,58,0.16)]" : "border-black/10 bg-white/85"}`}>
-                                    <div className="flex items-start justify-between gap-3">
+                                  <div key={team.id} className={`grid min-h-[158px] content-start gap-2 rounded-xl border p-3 ${isMine ? "border-[#1a5c3a]/60 bg-[#e0eee4] shadow-[0_8px_18px_rgba(26,92,58,0.14)]" : "border-black/10 bg-white/85"}`}>
+                                    <div className="flex items-start justify-between gap-2">
                                       <div className="min-w-0">
                                         <div className="text-[11px] uppercase tracking-[0.14em] text-[#617061]">{team.draft_slot ? `Draft slot ${team.draft_slot}` : "No slot"}</div>
-                                        <strong className="block break-words text-lg leading-tight">{team.name}</strong>
+                                        <strong className="block break-words leading-tight">{team.name}</strong>
                                       </div>
                                       <div className="flex shrink-0 flex-wrap justify-end gap-1">
                                         {isMine ? <span className="rounded-full bg-[#1a5c3a] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white">My Team</span> : null}
                                         {!draftComplete && currentTeamOnClock?.id === team.id ? <span className="rounded-full bg-[#f6d77a] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#1f2a1d]">On Clock</span> : null}
                                       </div>
                                     </div>
-                                    <div className="grid gap-2">
+                                    <div className="grid gap-1">
                                       {Array.from({ length: ROUNDS }, (_, index) => {
                                         const roundNumber = index + 1;
                                         const pick = teamPicks.find((entry) => entry.round_number === roundNumber) ?? null;
                                         return (
-                                          <div key={`${team.id}-round-${roundNumber}`} className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-3 py-2 text-sm ${pick ? "bg-white/90" : "bg-[#f7f2e9] text-[#617061]"}`}>
+                                          <div key={`${team.id}-round-${roundNumber}`} className={`grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs ${pick ? "bg-white/90" : "bg-[#f7f2e9] text-[#617061]"}`}>
                                             <span className="rounded-full bg-[#f2eadf] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#6a5940]">R{roundNumber}</span>
                                             <span className="min-w-0 break-words font-medium leading-tight">{pick?.player_name ?? "Waiting"}</span>
                                             {pick ? (
                                               <span className="flex shrink-0 items-center gap-2">
                                                 {playerOddsLabel(pick.player_name) ? <span className="text-[11px] font-semibold text-[#617061]">{playerOddsLabel(pick.player_name)}</span> : null}
-                                                {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-2 py-1 text-xs text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
+                                                {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-2 py-0.5 text-[11px] text-[#1a5c3a]" onClick={() => beginSwap(pick, team.name)}>Swap</button> : null}
                                               </span>
                                             ) : null}
                                           </div>
@@ -3429,13 +3468,23 @@ export default function Page() {
                                       </button>
                                     )}
                                 <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
-                                  Last updated: {resultsUpdatedLabel}{resultsFinalized ? " - Finalized" : ""}
-                                </div>
-                                <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
-                                  {busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}
+                                  <div className="font-semibold">Last updated: {resultsUpdatedLabel}{resultsFinalized ? " - Finalized" : ""}</div>
+                                  <div className="mt-1">{busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}</div>
                                 </div>
                               </div>
                           </div>
+                        {canManageLeague && !resultsFinalized ? (
+                          <details className="mb-4 rounded-2xl border border-white/20 bg-white/10">
+                            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-white">Correct results manually</summary>
+                            <div className="grid gap-3 border-t border-white/15 bg-[#f7f2e9] p-4 text-[#1f2a1d]">
+                              <textarea className="min-h-52 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm" value={manualLeaderboardDraft} onChange={(event) => setManualLeaderboardDraft(event.target.value)} placeholder={"Example:\n1 Scottie Scheffler\nT2 Rory McIlroy\nCUT Jordan Spieth"} />
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span className="text-sm text-[#617061]">Use one golfer per line when ESPN data needs a correction.</span>
+                                <button className="rounded-full bg-[#1a5c3a] px-4 py-2.5 text-sm font-semibold text-white" onClick={applyManualScores}>Apply Corrections</button>
+                              </div>
+                            </div>
+                          </details>
+                        ) : null}
                         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                           {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
                           <div key={entry.team.id} className={`grid gap-2 rounded-[1.6rem] p-3 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.14)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
