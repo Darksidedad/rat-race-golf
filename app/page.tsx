@@ -543,18 +543,21 @@ function shuffled<T>(items: T[]) {
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`rrg-brand ${compact ? "rrg-brand--compact" : ""}`} aria-label="Rat Race Golf">
-      <div className="rrg-brand__badge">
-        <span className="rrg-brand__track" />
-        <span className="rrg-brand__green" />
-        <span className="rrg-brand__pin" />
-        <span className="rrg-brand__ball" />
-      </div>
-      <div className="rrg-brand__text">
-        <div className="rrg-brand__eyebrow">Private Fantasy Golf League</div>
-        <div className="rrg-brand__name">
-          <span className="rrg-brand__primary">Rat Race</span>
-          <span className="rrg-brand__accent">Golf</span>
-        </div>
+      <svg className="rrg-brand__mark" viewBox="0 0 88 88" role="img" aria-hidden="true">
+        <rect x="4" y="4" width="80" height="80" rx="19" fill="#12382b" stroke="#f4c75d" strokeWidth="3" />
+        <path d="M21 61V31c0-7 5-12 12-12h27c7 0 12 5 12 12v18c0 7-5 12-12 12H39c-5 0-8-3-8-8s3-8 8-8h19" fill="none" stroke="#f9f3e8" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M56 45h5c6 0 11-5 11-11" fill="none" stroke="#f4c75d" strokeWidth="7" strokeLinecap="round" />
+        <circle cx="21" cy="67" r="8" fill="#f9f3e8" stroke="#12382b" strokeWidth="2" />
+        <circle cx="18.5" cy="64.5" r="1.1" fill="#9b9e92" />
+        <circle cx="23.5" cy="64" r="1.1" fill="#9b9e92" />
+        <circle cx="20.5" cy="69.5" r="1.1" fill="#9b9e92" />
+        <path d="M57 18v22" stroke="#f9f3e8" strokeWidth="3" strokeLinecap="round" />
+        <path d="M59 19l13 5-13 6z" fill="#f4c75d" />
+        <ellipse cx="57" cy="42" rx="9" ry="3.5" fill="#0b251c" stroke="#f4c75d" strokeWidth="2" />
+      </svg>
+      <div className="rrg-brand__name">
+        <span className="rrg-brand__primary">Rat Race</span>
+        <span className="rrg-brand__accent">Golf</span>
       </div>
     </div>
   );
