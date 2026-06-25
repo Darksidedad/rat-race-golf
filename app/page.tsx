@@ -3153,7 +3153,7 @@ export default function Page() {
         </section>
 
         <section className={`rrg-card rounded-3xl ${activeRoomTab === "draft" ? "p-4" : "p-5"}`}>
-            <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-3"} flex flex-wrap items-start justify-between gap-3`}>
+            <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-3"} grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]`}>
               <div className="min-w-0">
                 <h2 className="m-0 font-[Georgia] text-2xl">{activeRoomTab === "season" ? `${currentLeague?.name ?? "League"} Season` : currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
                 {currentSession && activeRoomTab === "results" ? (
@@ -3165,28 +3165,30 @@ export default function Page() {
                 ) : null}
               </div>
               {currentSession && activeRoomTab !== "season" ? (
-                <div className="ml-auto grid justify-items-end gap-1.5">
-                  <div className="flex flex-wrap justify-end gap-2">
+                <div className="grid justify-items-center gap-1.5 xl:justify-self-center">
+                  <div className="flex flex-wrap justify-center gap-2">
                     {canManageLeague ? <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                   </div>
                   {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">Leaderboard updated {resultsUpdatedLabel}</div> : null}
-                  {activeRoomTab === "results" ? (
-                    <div className="flex flex-wrap justify-end gap-2">
-                      <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
-                      {canManageLeague ? (
-                        resultsFinalized
-                          ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
-                          : <button className="rounded-full bg-[#174a35] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>Finalize Results</button>
-                      ) : null}
-                      {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
-                    </div>
-                  ) : null}
                 </div>
-              ) : (
-                <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{activeRoomTab === "season" ? "League stats" : currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
-              )}
+              ) : <div />}
+              <div className="flex flex-wrap justify-end gap-2 xl:justify-self-end">
+                {activeRoomTab === "results" && currentSession ? (
+                  <>
+                    <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
+                    {canManageLeague ? (
+                      resultsFinalized
+                        ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
+                        : <button className="rounded-full bg-[#174a35] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>Finalize Results</button>
+                    ) : null}
+                    {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
+                  </>
+                ) : (
+                  <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{activeRoomTab === "season" ? "League stats" : currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
+                )}
+              </div>
             </div>
 
             {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
