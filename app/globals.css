@@ -52,83 +52,40 @@ body {
 .rrg-brand {
   display: flex;
   align-items: center;
-  gap: 0.9rem;
-  color: #fdf7eb;
+  width: fit-content;
+  max-width: min(100%, 34rem);
+  padding: 0.35rem 0.7rem;
+  border: 1px solid rgba(244, 199, 93, 0.42);
+  border-radius: 1rem;
+  background: rgba(255, 252, 245, 0.96);
+  box-shadow: 0 10px 24px rgba(6, 25, 18, 0.18);
 }
 
 .rrg-card .rrg-brand {
-  color: var(--rrg-pine);
+  border-color: rgba(18, 56, 43, 0.14);
+  box-shadow: 0 10px 24px rgba(49, 38, 18, 0.1);
 }
 
-.rrg-brand__mark {
+.rrg-brand__image {
   display: block;
-  width: 4.4rem;
-  height: 4.4rem;
-  flex: 0 0 auto;
-  filter: drop-shadow(0 10px 18px rgba(6, 25, 18, 0.22));
+  width: auto;
+  height: clamp(3.6rem, 5.4vw, 5.2rem);
 }
 
-.rrg-brand__name {
-  display: flex;
-  align-items: baseline;
-  gap: 0.55rem;
-  line-height: 0.9;
-  white-space: nowrap;
-}
-
-.rrg-brand__primary {
-  display: flex;
-  align-items: baseline;
-  gap: 0.28em;
-  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
-  font-size: clamp(2rem, 3.7vw, 3.85rem);
-  font-weight: 900;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  text-shadow: 0 7px 18px rgba(0, 0, 0, 0.14);
-}
-
-.rrg-brand__accent {
-  color: var(--rrg-gold);
-  font-family: "Trebuchet MS", "Segoe UI", sans-serif;
-  font-size: clamp(1.35rem, 2.15vw, 2.15rem);
-  font-weight: 900;
-  letter-spacing: 0;
-  text-transform: uppercase;
-}
-
-.rrg-brand--compact .rrg-brand__mark {
-  height: 3.2rem;
-  width: 3.2rem;
-}
-
-.rrg-brand--compact .rrg-brand__primary {
-  font-size: clamp(1.62rem, 6.7vw, 2.75rem);
-}
-
-.rrg-brand--compact .rrg-brand__accent {
-  font-size: clamp(1rem, 3.3vw, 1.5rem);
+.rrg-brand--compact .rrg-brand__image {
+  height: clamp(3.25rem, 12vw, 4.5rem);
 }
 
 @media (max-width: 640px) {
   .rrg-brand {
-    gap: 0.7rem;
+    max-width: 100%;
+    padding: 0.28rem 0.5rem;
+    border-radius: 0.8rem;
   }
 
-  .rrg-brand__mark {
-    height: 3rem;
-    width: 3rem;
-  }
-
-  .rrg-brand__name {
-    gap: 0.35rem;
-  }
-
-  .rrg-brand__primary {
-    font-size: 1.55rem;
-  }
-
-  .rrg-brand__accent {
-    font-size: 1rem;
+  .rrg-brand__image {
+    width: auto;
+    max-width: 78vw;
+    height: 3.35rem;
   }
 }
