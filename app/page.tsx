@@ -236,19 +236,26 @@ function expandPlayerInput(input: string): PlayerPoolEntry[] {
     });
 }
 
-function parseManualLeaderboard(input: string) {
-  const result: Record<string, number | null> = {};
-  input.split("\n").map((line) => line.trim()).filter(Boolean).forEach((line) => {
-    const match = line.match(/^(T?\d+|CUT|WD|DQ)\s+(.+)$/i);
-    if (!match) return;
-    const raw = match[1].toUpperCase();
-    result[normalizeName(match[2].trim())] = raw === "CUT" || raw === "WD" || raw === "DQ" ? null : Number(raw.replace("T", ""));
-  });
-  return result;
-}
-
 function pointsForPosition(position: number | null) {
   return position === null || position < 1 ? 0 : Math.max(0, 51 - position);
+}
+
+function resultPositionEditorValue(position: number | null, total: string | null | undefined, thru: string | null | undefined) {
+  if (position) return String(position);
+  const status = [total, thru]
+    .map((value) => String(value ?? "").trim().toUpperCase())
+    .find((value) => value === "CUT" || value === "WD" || value === "DQ");
+  return status ?? "";
+}
+
+function parseResultPositionEditorValue(value: string) {
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) return { kind: "empty" as const };
+  if (normalized === "CUT" || normalized === "WD" || normalized === "DQ") return { kind: "status" as const, status: normalized };
+  const positionMatch = normalized.match(/^T?(\d+)$/);
+  if (!positionMatch) return null;
+  const position = Number(positionMatch[1]);
+  return Number.isInteger(position) && position > 0 ? { kind: "position" as const, position } : null;
 }
 
 function isNonScoringResult(total: string | null | undefined, thru: string | null | undefined) {
@@ -585,7 +592,8 @@ export default function Page() {
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
   const [pendingLeagueSlug, setPendingLeagueSlug] = useState("");
   const [playerPoolDraft, setPlayerPoolDraft] = useState("");
-  const [manualLeaderboardDraft, setManualLeaderboardDraft] = useState("");
+  const [resultPositionEditorOpen, setResultPositionEditorOpen] = useState(false);
+  const [resultPositionEdits, setResultPositionEdits] = useState<Record<string, string>>({});
   const [playerFilter, setPlayerFilter] = useState("");
   const [newTeamName, setNewTeamName] = useState("");
   const [authMode, setAuthMode] = useState<"sign_in" | "sign_up">("sign_in");
@@ -613,7 +621,6 @@ export default function Page() {
   const [editingPick, setEditingPick] = useState<EditingPick | null>(null);
   const [highlightedPlayerIndex, setHighlightedPlayerIndex] = useState(0);
   const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
-  const [oddsSource, setOddsSource] = useState("");
   const [autoFieldImportAttempts, setAutoFieldImportAttempts] = useState<Record<string, boolean>>({});
   const [autoTeamClaimAttempts, setAutoTeamClaimAttempts] = useState<Record<string, boolean>>({});
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
@@ -795,7 +802,6 @@ export default function Page() {
 
   useEffect(() => {
     setPlayerPoolDraft(currentSession?.player_input ?? "");
-    setManualLeaderboardDraft(stripSessionMetadata(currentSession?.manual_leaderboard_input));
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
@@ -807,12 +813,10 @@ export default function Page() {
   useEffect(() => {
     if (currentSession?.odds_snapshot && Object.keys(currentSession.odds_snapshot).length) {
       setOddsByPlayer(currentSession.odds_snapshot);
-      setOddsSource(currentSession.odds_source ?? "");
       return;
     }
     if (!currentSession?.event_name) {
       setOddsByPlayer({});
-      setOddsSource("");
       return;
     }
     loadOdds(currentSession.event_name, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
@@ -934,10 +938,10 @@ export default function Page() {
     if (!currentSession?.updated_at) return "Not updated yet";
     return new Date(currentSession.updated_at).toLocaleString();
   }, [currentSession?.updated_at]);
-  const currentUsersTeams = useMemo(() => teams.filter((team) => team.owner_user_id === user?.id), [teams, user?.id]);
   const canDraftCurrentPick = !!user && !!currentTeamOnClock && (isLeagueAdmin || currentTeamOnClock.owner_user_id === user.id);
   const canManageLeague = !!user && isLeagueAdmin;
   const canManagePermissions = !!user && (isSiteAdmin || isCommissioner);
+  const canEditResultPositions = !!user && (isCommissioner || isAssistantCommissioner);
   const resultsFinalized = currentSession?.status === "finalized";
   const setupHasEvent = !!currentSession?.event_id;
   const setupHasTeams = assignedTeams.length > 0 && validDraftOrder;
@@ -945,7 +949,6 @@ export default function Page() {
   const setupHasOdds = Object.keys(displayOddsByPlayer).length > 0;
   const setupReady = setupHasEvent && setupHasTeams && setupHasField;
   const tournamentIdentityLocked = picks.length > 0;
-  const ownedTeamNames = currentUsersTeams.map((team) => team.name);
   const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
   const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
   const [draftFlowWidth, setDraftFlowWidth] = useState(0);
@@ -1931,15 +1934,12 @@ export default function Page() {
       const payload: EspnOddsResponse = await response.json();
       if (!payload.ok || !payload.odds) {
         setOddsByPlayer({});
-        setOddsSource("");
         return;
       }
       setOddsByPlayer(payload.odds);
-      setOddsSource(payload.source ?? "");
     } catch (error) {
       console.error(error);
       setOddsByPlayer({});
-      setOddsSource("");
     }
   }
 
@@ -2028,7 +2028,6 @@ export default function Page() {
 
     setPlayerPoolDraft(field.playerInput);
     setOddsByPlayer(field.odds);
-    setOddsSource(field.oddsSource);
     setStatusMessage(message);
     await loadSessions();
     await loadSession(sessionId, false);
@@ -2273,7 +2272,6 @@ export default function Page() {
       importedPlayerCount = field.playerCount;
       importedOddsCount = field.oddsCount;
       setOddsByPlayer(field.odds);
-      setOddsSource(field.oddsSource);
     } catch (error) {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
@@ -2516,25 +2514,58 @@ export default function Page() {
     setBusy("");
   }
 
-  async function applyManualScores() {
-    if (!canManageLeague) return setStatusMessage("Only the commissioner can apply manual scores.");
-    if (!currentSession) return;
-    if (currentSession.status === "finalized") return setStatusMessage("This tournament is finalized. Reopen results before applying score changes.");
-    setBusy("Applying manual scores...");
-    const parsed = parseManualLeaderboard(manualLeaderboardDraft);
-    if (!Object.keys(parsed).length) {
-      setBusy("");
-      setStatusMessage("Paste at least one leaderboard line before applying manual scores.");
-      return;
-    }
-    await updateSession({ manual_leaderboard_input: manualLeaderboardWithEventSeason(manualLeaderboardDraft, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession), sessionCountsForSeason(currentSession)), current_positions: { ...(currentSession.current_positions ?? {}), ...parsed }, status: "scored" }, `Applied ${Object.keys(parsed).length} manual leaderboard entries.`);
+  function openResultPositionEditor() {
+    if (!canEditResultPositions || !currentSession) return;
+    const positions = normalizeStoredPlayoffPositions(currentSession.current_positions ?? {}, currentSession.current_totals ?? {});
+    const totals = currentSession.current_totals ?? {};
+    setResultPositionEdits(Object.fromEntries(picks.map((pick) => {
+      const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+      const storedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+      return [pick.id, resultPositionEditorValue(position, parseStoredTotal(storedTotal), parseStoredThru(storedTotal))];
+    })));
+    setResultPositionEditorOpen(true);
+  }
+
+  async function saveResultPositionEdits() {
+    if (!canEditResultPositions || !currentSession) return setStatusMessage("Only commissioners and assistant commissioners can edit final positions.");
+
+    const parsedEdits = picks.map((pick) => ({
+      pick,
+      parsed: parseResultPositionEditorValue(resultPositionEdits[pick.id] ?? ""),
+    }));
+    const invalidEdit = parsedEdits.find((entry) => entry.parsed === null);
+    if (invalidEdit) return setStatusMessage(`Enter a finish such as 1, T6, CUT, WD, or DQ for ${invalidEdit.pick.player_name}.`);
+
+    const positions = { ...(currentSession.current_positions ?? {}) };
+    const totals = { ...(currentSession.current_totals ?? {}) };
+    parsedEdits.forEach(({ pick, parsed }) => {
+      if (!parsed) return;
+      const key = normalizeName(pick.player_name);
+      const existingTotal = lookupLeaderboardValue(pick.player_name, totals);
+      Object.keys(positions).filter((positionKey) => normalizeName(positionKey) === key).forEach((positionKey) => delete positions[positionKey]);
+      Object.keys(totals).filter((totalKey) => normalizeName(totalKey) === key).forEach((totalKey) => delete totals[totalKey]);
+      if (parsed.kind === "status") {
+        positions[key] = null;
+        totals[key] = `${parsed.status}||${parsed.status}`;
+      } else if (parsed.kind === "position") {
+        positions[key] = parsed.position;
+        totals[key] = `${parseStoredTotal(existingTotal) ?? ""}||F`;
+      }
+    });
+
+    setBusy("Saving final positions...");
+    await updateSession(
+      { current_positions: positions, current_totals: totals },
+      `Updated final positions for ${parsedEdits.length} drafted golfers. Team scores were recalculated.`
+    );
     setBusy("");
+    setResultPositionEditorOpen(false);
   }
 
   async function finalizeResults() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can finalize tournament results.");
     if (!currentSession) return;
-    if (!Object.keys(currentSession.current_positions ?? {}).length) return setStatusMessage("Refresh the leaderboard or apply scores before finalizing this tournament.");
+    if (!Object.keys(currentSession.current_positions ?? {}).length) return setStatusMessage("Refresh the leaderboard or enter final positions before finalizing this tournament.");
     await updateSession({ status: "finalized" }, `Finalized ${currentSession.event_name ?? currentSession.name}. Saved results are now locked.`);
   }
 
@@ -2879,6 +2910,73 @@ export default function Page() {
                   <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" disabled={busy === "Creating session..."} onClick={resetNewDraftForm}>Reset</button>
                   <button className="rounded-full bg-[#1a5c3a] px-5 py-2 font-semibold text-white disabled:opacity-50" disabled={busy === "Creating session..." || !newSessionEventId || !newDraftTeams.some((team) => team.selected)} onClick={createSession}>
                     {busy === "Creating session..." ? busy : "Create Draft Room"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {resultPositionEditorOpen && canEditResultPositions ? (
+          <div className="fixed inset-0 z-50 bg-black/55 px-3 py-4">
+            <div className="mx-auto grid max-h-[94vh] w-full max-w-[1500px] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl bg-[#fbf7ef] text-[#1f2a1d] shadow-[0_24px_80px_rgba(0,0,0,0.32)]">
+              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 px-4 py-3">
+                <div>
+                  <h2 className="m-0 font-[Georgia] text-2xl">Edit Final Positions</h2>
+                  <div className="mt-1 text-sm text-[#617061]">Enter a finish such as 1, T6, CUT, WD, or DQ. Team points update when you save.</div>
+                </div>
+                <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => setResultPositionEditorOpen(false)}>Close</button>
+              </div>
+
+              <div className="overflow-y-auto p-3">
+                <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                  {assignedTeams.map((team) => {
+                    const teamPicks = picks.filter((pick) => pick.team_id === team.id).sort((a, b) => a.round_number - b.round_number);
+                    const editedPoints = teamPicks
+                      .map((pick) => parseResultPositionEditorValue(resultPositionEdits[pick.id] ?? ""))
+                      .map((result) => result?.kind === "position" ? pointsForPosition(result.position) : 0)
+                      .sort((a, b) => b - a)
+                      .slice(0, 3)
+                      .reduce((sum, points) => sum + points, 0);
+                    return (
+                      <div key={team.id} className="grid content-start gap-2 rounded-xl border border-black/10 bg-white p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="text-[10px] uppercase tracking-[0.14em] text-[#617061]">Draft slot {team.draft_slot}</div>
+                            <strong>{team.name}</strong>
+                          </div>
+                          <span className="rounded-full bg-[#d9eadf] px-2.5 py-0.5 text-xs font-semibold text-[#1a5c3a]">{editedPoints} pts</span>
+                        </div>
+                        <div className="grid gap-1.5">
+                          {teamPicks.map((pick) => {
+                            const parsedPosition = parseResultPositionEditorValue(resultPositionEdits[pick.id] ?? "");
+                            const positionPoints = parsedPosition?.kind === "position" ? pointsForPosition(parsedPosition.position) : 0;
+                            return (
+                              <label key={pick.id} className="grid grid-cols-[minmax(0,1fr)_68px_auto] items-center gap-2 rounded-lg bg-[#f7f2e9] px-2 py-1.5">
+                                <span className="min-w-0 truncate text-sm font-medium">{pick.player_name}</span>
+                                <input
+                                  className={`w-full rounded-lg border bg-white px-2 py-1.5 text-center text-sm font-semibold uppercase ${parsedPosition === null ? "border-[#9d4b2f] text-[#9d4b2f]" : "border-black/15"}`}
+                                  value={resultPositionEdits[pick.id] ?? ""}
+                                  onChange={(event) => setResultPositionEdits((current) => ({ ...current, [pick.id]: event.target.value.toUpperCase() }))}
+                                  placeholder="P/CUT"
+                                />
+                                <span className="w-10 text-right text-xs font-semibold text-[#617061]">{positionPoints}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-black/10 bg-white px-4 py-3">
+                <div className="text-sm text-[#617061]">{busy || statusMessage}</div>
+                <div className="flex gap-2">
+                  <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={() => setResultPositionEditorOpen(false)}>Cancel</button>
+                  <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50" disabled={busy === "Saving final positions..."} onClick={saveResultPositionEdits}>
+                    {busy === "Saving final positions..." ? "Saving..." : "Save Positions"}
                   </button>
                 </div>
               </div>
@@ -3425,13 +3523,13 @@ export default function Page() {
                   ) : null}
 
                 {activeRoomTab === "results" ? (
-                <div className="grid gap-5">
-                  <div className="rounded-[2rem] border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-4 text-white shadow-[0_18px_45px_rgba(74,57,28,0.15)]">
-                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                            <div className="grid gap-2">
-                                <h3 className="m-0 font-[Georgia] text-3xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
+                <div className="grid gap-3">
+                  <div className="rounded-2xl border border-black/10 bg-[radial-gradient(circle_at_top_left,#1f5d40_0%,#173c31_35%,#efe5d4_35.5%,#f7f2e9_100%)] p-3 text-white shadow-[0_14px_32px_rgba(74,57,28,0.14)]">
+                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                            <div className="grid gap-1">
+                                <h3 className="m-0 font-[Georgia] text-2xl leading-tight">{currentSession.event_name || currentSession.name}</h3>
                                 {currentSessionDisplayEvent?.course || currentSessionDisplayEvent?.location ? (
-                                  <div className="text-sm font-medium text-white/88">
+                                  <div className="text-xs font-medium text-white/88">
                                     {currentSessionDisplayEvent.course ? (
                                       <a className="underline decoration-white/35 underline-offset-4 hover:text-[#f6d77a]" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">
                                         {currentSessionDisplayEvent.course}
@@ -3441,83 +3539,70 @@ export default function Page() {
                                     {currentSessionDisplayEvent.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
                                   </div>
                                 ) : null}
-                                <div className="flex flex-wrap gap-2 text-xs font-medium text-white/85">
-                                  <span className="rounded-full bg-white/12 px-3 py-1">{leaderboard.length} teams</span>
-                                  {currentSessionDisplayEvent?.dateLabel ? <span className="rounded-full bg-white/12 px-3 py-1">{currentSessionDisplayEvent.dateLabel}</span> : null}
+                                <div className="flex flex-wrap gap-1.5 text-[11px] font-medium text-white/85">
+                                  <span className="rounded-full bg-white/12 px-2.5 py-0.5">{leaderboard.length} teams</span>
+                                  {currentSessionDisplayEvent?.dateLabel ? <span className="rounded-full bg-white/12 px-2.5 py-0.5">{currentSessionDisplayEvent.dateLabel}</span> : null}
+                                  <span className="rounded-full bg-white/12 px-2.5 py-0.5">Updated {resultsUpdatedLabel}</span>
                                 </div>
                               </div>
-                                  <div className="grid w-full max-w-[260px] gap-2 justify-items-start">
-                                    {canManageLeague ? (
-                                      resultsFinalized ? (
-                                        <button className="rounded-full border border-[#f6d77a]/60 bg-white/90 px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={reopenFinalizedResults}>
-                                          Reopen Results
-                                        </button>
-                                      ) : (
-                                        <>
-                                          <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
-                                            {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                          </button>
-                                          <button className="rounded-full border border-white/30 bg-[#173c31] px-4 py-2 text-sm font-semibold text-white" onClick={finalizeResults}>
-                                            Finalize Results
-                                          </button>
-                                        </>
-                                      )
-                                    ) : (
-                                      <button className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d] shadow-[0_10px_20px_rgba(15,25,18,0.18)]" onClick={pullLeaderboard}>
-                                        {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
-                                      </button>
-                                    )}
-                                <div className="w-full rounded-xl bg-[#f7f2e9] px-3 py-2 text-xs text-[#4c5b4d]">
-                                  <div className="font-semibold">Last updated: {resultsUpdatedLabel}{resultsFinalized ? " - Finalized" : ""}</div>
-                                  <div className="mt-1">{busy === "Pulling leaderboard..." ? "Fetching latest ESPN positions..." : statusMessage}</div>
-                                </div>
-                              </div>
-                          </div>
-                        {canManageLeague && !resultsFinalized ? (
-                          <details className="mb-4 rounded-2xl border border-white/20 bg-white/10">
-                            <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-white">Correct results manually</summary>
-                            <div className="grid gap-3 border-t border-white/15 bg-[#f7f2e9] p-4 text-[#1f2a1d]">
-                              <textarea className="min-h-52 rounded-xl border border-black/15 bg-white px-3 py-3 font-mono text-sm" value={manualLeaderboardDraft} onChange={(event) => setManualLeaderboardDraft(event.target.value)} placeholder={"Example:\n1 Scottie Scheffler\nT2 Rory McIlroy\nCUT Jordan Spieth"} />
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <span className="text-sm text-[#617061]">Use one golfer per line when ESPN data needs a correction.</span>
-                                <button className="rounded-full bg-[#1a5c3a] px-4 py-2.5 text-sm font-semibold text-white" onClick={applyManualScores}>Apply Corrections</button>
-                              </div>
-                            </div>
-                          </details>
-                        ) : null}
-                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                                  <div className="flex max-w-[520px] flex-wrap items-center justify-end gap-2">
+                                     {canManageLeague ? (
+                                       resultsFinalized ? (
+                                         <button className="rounded-full border border-[#f6d77a]/60 bg-white/90 px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={reopenFinalizedResults}>
+                                           Reopen Results
+                                         </button>
+                                       ) : (
+                                         <>
+                                           <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>
+                                             {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                                           </button>
+                                           <button className="rounded-full border border-white/30 bg-[#173c31] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>
+                                             Finalize Results
+                                           </button>
+                                         </>
+                                       )
+                                     ) : (
+                                       <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>
+                                         {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
+                                       </button>
+                                     )}
+                                     {canEditResultPositions ? <button className="rounded-full border border-white/30 bg-white/12 px-3 py-1.5 text-sm font-semibold text-white" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
+                                     <span className="rounded-full bg-[#f7f2e9] px-3 py-1.5 text-xs text-[#4c5b4d]">{busy === "Pulling leaderboard..." ? "Fetching ESPN..." : resultsFinalized ? "Finalized" : statusMessage}</span>
+                               </div>
+                           </div>
+                        <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                           {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
-                          <div key={entry.team.id} className={`grid gap-2 rounded-[1.6rem] p-3 text-[#1f2a1d] shadow-[0_14px_30px_rgba(15,25,18,0.14)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
-                            <div className="flex items-start justify-between gap-3">
+                          <div key={entry.team.id} className={`grid gap-1.5 rounded-2xl p-2.5 text-[#1f2a1d] shadow-[0_10px_22px_rgba(15,25,18,0.12)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
+                            <div className="flex items-start justify-between gap-2">
                               <div>
-                                <div className="text-xs uppercase tracking-[0.2em] text-[#617061]">#{index + 1}</div>
-                                <strong className="text-lg">{entry.team.name}</strong>
+                                <div className="text-[10px] uppercase tracking-[0.16em] text-[#617061]">#{index + 1}</div>
+                                <strong>{entry.team.name}</strong>
                               </div>
-                              <div className="rounded-full bg-[#1a5c3a] px-3 py-1 text-sm font-semibold text-white">{entry.total} pts</div>
+                              <div className="rounded-full bg-[#1a5c3a] px-2.5 py-0.5 text-xs font-semibold text-white">{entry.total} pts</div>
                             </div>
-                            <div className="grid gap-1.5 text-sm">
+                            <div className="grid gap-1 text-xs">
                               {!entry.playerScores.length ? <div className="text-[#617061]">No drafted golfers yet.</div> : entry.playerScores.map((player) => (
-                                <div key={player.id} className={`grid grid-cols-[1fr_auto] items-center gap-2 rounded-2xl px-3 py-2 ${entry.countingKeys.has(player.id) ? "bg-[#e0eee4]" : "bg-[#f4efe6]"}`}>
+                                <div key={player.id} className={`grid grid-cols-[1fr_auto] items-center gap-1.5 rounded-xl px-2 py-1.5 ${entry.countingKeys.has(player.id) ? "bg-[#e0eee4]" : "bg-[#f4efe6]"}`}>
                                   <div className="min-w-0">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-1.5">
                                       <div className="truncate font-medium leading-tight">{player.player_name}</div>
-                                      {player.total ? <span className={`shrink-0 text-sm font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
+                                      {player.total ? <span className={`shrink-0 text-xs font-semibold ${totalColorClass(player.total)}`}>{player.total}</span> : null}
                                     </div>
-                                    <div className="text-[11px] text-[#617061]">
+                                    <div className="text-[10px] text-[#617061]">
                                       {resultStatusLabel(player.position, player.total, player.thru, player.meta)}
                                     </div>
                                   </div>
                                   <div className="text-right">
                                     <div className="font-semibold">{player.points}</div>
-                                    <div className="text-[10px] uppercase tracking-[0.15em] text-[#617061]">{entry.countingKeys.has(player.id) ? "Counts" : "Bench"}</div>
+                                    <div className="text-[9px] uppercase tracking-[0.12em] text-[#617061]">{entry.countingKeys.has(player.id) ? "Counts" : "Bench"}</div>
                                   </div>
-                                  <div className="col-span-2 mt-1 grid grid-cols-9 gap-1">
+                                  <div className="col-span-2 grid grid-cols-9 gap-0.5">
                                     {Array.from({ length: 18 }, (_, holeIndex) => {
                                       const filled = holeIndex < holesCompletedForDisplay(player.thru, player.meta);
                                       return (
                                         <span
                                           key={`${player.id}-hole-${holeIndex + 1}`}
-                                          className={`h-1.5 rounded-full ${filled ? "bg-[#1a5c3a]" : "bg-black/10"}`}
+                                          className={`h-1 rounded-full ${filled ? "bg-[#1a5c3a]" : "bg-black/10"}`}
                                           title={`Hole ${holeIndex + 1}`}
                                         />
                                       );
