@@ -195,6 +195,10 @@ function courseWebsiteUrl(event: EventOption) {
   return `https://www.google.com/search?btnI=1&q=${encodeURIComponent(query)}`;
 }
 
+function espnLeaderboardUrl(eventId: string, season: number) {
+  return `https://www.espn.com/golf/leaderboard/_/tournamentId/${encodeURIComponent(eventId)}/season/${season}`;
+}
+
 function extractAmericanOdds(line: string) {
   const match = line.match(/(?:^|\s)([+-]\d{3,6})(?=\s|$)/);
   if (!match) return { line, odds: undefined };
@@ -2917,18 +2921,34 @@ export default function Page() {
           </div>
         ) : null}
 
-        {resultPositionEditorOpen && canEditResultPositions ? (
-          <div className="fixed inset-0 z-50 bg-black/55 px-3 py-4">
-            <div className="mx-auto grid max-h-[94vh] w-full max-w-[1500px] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl bg-[#fbf7ef] text-[#1f2a1d] shadow-[0_24px_80px_rgba(0,0,0,0.32)]">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-black/10 px-4 py-3">
+        {resultPositionEditorOpen && canEditResultPositions && currentSession ? (
+          <div className="fixed inset-0 z-50 bg-[#10271f]/80 px-3 py-4 backdrop-blur-sm">
+            <div className="mx-auto grid max-h-[94vh] w-full max-w-[1500px] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-white/20 bg-[#fbf7ef] text-[#1f2a1d] shadow-[0_28px_90px_rgba(0,0,0,0.42)]">
+              <div className="flex flex-wrap items-start justify-between gap-3 bg-[#174a35] px-4 py-3 text-white">
                 <div>
                   <h2 className="m-0 font-[Georgia] text-2xl">Edit Final Positions</h2>
-                  <div className="mt-1 text-sm text-[#617061]">Enter a finish such as 1, T6, CUT, WD, or DQ. Team points update when you save.</div>
+                  <div className="mt-1 text-sm text-white/80">{currentSession.event_name || currentSession.name} · Enter 1, T6, CUT, WD, or DQ.</div>
                 </div>
-                <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => setResultPositionEditorOpen(false)}>Close</button>
+                <div className="flex flex-wrap gap-2">
+                  {currentSession.event_id ? (
+                    <a
+                      className="rounded-full bg-[#f6d77a] px-4 py-2 text-sm font-semibold text-[#1f2a1d]"
+                      href={espnLeaderboardUrl(currentSession.event_id, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession))}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      View ESPN Leaderboard
+                    </a>
+                  ) : null}
+                  <button className="rounded-full border border-white/35 bg-white/10 px-4 py-2 text-sm text-white" onClick={() => setResultPositionEditorOpen(false)}>Close</button>
+                </div>
               </div>
 
               <div className="overflow-y-auto p-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#1a5c3a]/20 bg-[#e0eee4] px-3 py-2 text-sm">
+                  <span><strong>How it works:</strong> compare with ESPN, update only the incorrect finishes, then save. Team scores and rankings recalculate automatically.</span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{picks.length} golfers</span>
+                </div>
                 <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                   {assignedTeams.map((team) => {
                     const teamPicks = picks.filter((pick) => pick.team_id === team.id).sort((a, b) => a.round_number - b.round_number);
@@ -2952,10 +2972,10 @@ export default function Page() {
                             const parsedPosition = parseResultPositionEditorValue(resultPositionEdits[pick.id] ?? "");
                             const positionPoints = parsedPosition?.kind === "position" ? pointsForPosition(parsedPosition.position) : 0;
                             return (
-                              <label key={pick.id} className="grid grid-cols-[minmax(0,1fr)_68px_auto] items-center gap-2 rounded-lg bg-[#f7f2e9] px-2 py-1.5">
+                              <label key={pick.id} className="grid grid-cols-[minmax(0,1fr)_76px_auto] items-center gap-2 rounded-lg border border-black/5 bg-[#f7f2e9] px-2 py-1.5">
                                 <span className="min-w-0 truncate text-sm font-medium">{pick.player_name}</span>
                                 <input
-                                  className={`w-full rounded-lg border bg-white px-2 py-1.5 text-center text-sm font-semibold uppercase ${parsedPosition === null ? "border-[#9d4b2f] text-[#9d4b2f]" : "border-black/15"}`}
+                                  className={`w-full rounded-lg border-2 bg-white px-2 py-1.5 text-center text-sm font-bold uppercase ${parsedPosition === null ? "border-[#9d4b2f] text-[#9d4b2f]" : "border-[#1a5c3a]/30 text-[#1f2a1d]"}`}
                                   value={resultPositionEdits[pick.id] ?? ""}
                                   onChange={(event) => setResultPositionEdits((current) => ({ ...current, [pick.id]: event.target.value.toUpperCase() }))}
                                   placeholder="P/CUT"
@@ -3561,15 +3581,33 @@ export default function Page() {
                                            </button>
                                          </>
                                        )
-                                     ) : (
+                                      ) : (
                                        <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>
                                          {busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Leaderboard"}
                                        </button>
                                      )}
-                                     {canEditResultPositions ? <button className="rounded-full border border-white/30 bg-white/12 px-3 py-1.5 text-sm font-semibold text-white" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
+                                     {currentSession.event_id ? (
+                                       <a
+                                         className="rounded-full border border-white/30 bg-white/12 px-3 py-1.5 text-sm font-semibold text-white"
+                                         href={espnLeaderboardUrl(currentSession.event_id, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession))}
+                                         target="_blank"
+                                         rel="noreferrer"
+                                       >
+                                         View ESPN Leaderboard
+                                       </a>
+                                     ) : null}
                                      <span className="rounded-full bg-[#f7f2e9] px-3 py-1.5 text-xs text-[#4c5b4d]">{busy === "Pulling leaderboard..." ? "Fetching ESPN..." : resultsFinalized ? "Finalized" : statusMessage}</span>
                                </div>
                            </div>
+                        {canEditResultPositions ? (
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#f6d77a]/70 bg-[#f6d77a] px-4 py-2.5 text-[#1f2a1d] shadow-[0_8px_20px_rgba(246,215,122,0.18)]">
+                            <div>
+                              <div className="text-xs font-bold uppercase tracking-[0.12em]">Commissioner Tools</div>
+                              <div className="text-sm">Correct a golfer’s finish and automatically recalculate team scores.</div>
+                            </div>
+                            <button className="rounded-full bg-[#174a35] px-5 py-2 text-sm font-bold text-white shadow-sm" onClick={openResultPositionEditor}>Edit Final Positions</button>
+                          </div>
+                        ) : null}
                         <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                           {!leaderboard.length ? <div className="rounded-3xl border border-white/15 bg-white/10 p-4 text-white/80">No active teams are ready to score yet.</div> : leaderboard.map((entry, index) => (
                           <div key={entry.team.id} className={`grid gap-1.5 rounded-2xl p-2.5 text-[#1f2a1d] shadow-[0_10px_22px_rgba(15,25,18,0.12)] ${index === 0 ? "bg-[#f6d77a]" : index === 1 ? "bg-[#e7ecef]" : index === 2 ? "bg-[#e1b18a]" : "bg-white/92"}`}>
