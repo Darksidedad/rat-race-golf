@@ -3155,34 +3155,34 @@ export default function Page() {
         <section className={`rrg-card rounded-3xl ${activeRoomTab === "draft" ? "p-4" : "p-5"}`}>
             <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-3"} flex flex-wrap items-start justify-between gap-3`}>
               <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-3">
-                  <h2 className="m-0 font-[Georgia] text-2xl">{activeRoomTab === "season" ? `${currentLeague?.name ?? "League"} Season` : currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
-                  {currentSession ? (
-                    <div className="flex flex-wrap gap-2">
-                      {canManageLeague ? <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
-                      <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
-                      <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
-                    </div>
-                  ) : null}
-                </div>
+                <h2 className="m-0 font-[Georgia] text-2xl">{activeRoomTab === "season" ? `${currentLeague?.name ?? "League"} Season` : currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
                 {currentSession && activeRoomTab === "results" ? (
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#617061]">
                     {currentSessionDisplayEvent?.course ? <a className="font-medium text-[#1a5c3a] underline decoration-[#1a5c3a]/25 underline-offset-2" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">{currentSessionDisplayEvent.course}</a> : null}
                     {currentSessionDisplayEvent?.location ? <span>{currentSessionDisplayEvent.location}</span> : null}
                     {currentSessionDisplayEvent?.dateLabel ? <span>{currentSessionDisplayEvent.dateLabel}</span> : null}
-                    <span className="font-medium text-[#1a5c3a]">Leaderboard updated {resultsUpdatedLabel}</span>
                   </div>
                 ) : null}
               </div>
-              {activeRoomTab === "results" && currentSession ? (
-                <div className="ml-auto flex flex-wrap justify-end gap-2">
-                  <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
-                  {canManageLeague ? (
-                    resultsFinalized
-                      ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
-                      : <button className="rounded-full bg-[#174a35] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>Finalize Results</button>
+              {currentSession && activeRoomTab !== "season" ? (
+                <div className="ml-auto grid justify-items-end gap-1.5">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {canManageLeague ? <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "setup" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("setup")}>Tournament</button> : null}
+                    <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
+                    <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
+                  </div>
+                  {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">Leaderboard updated {resultsUpdatedLabel}</div> : null}
+                  {activeRoomTab === "results" ? (
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
+                      {canManageLeague ? (
+                        resultsFinalized
+                          ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
+                          : <button className="rounded-full bg-[#174a35] px-3 py-1.5 text-sm font-semibold text-white" onClick={finalizeResults}>Finalize Results</button>
+                      ) : null}
+                      {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
+                    </div>
                   ) : null}
-                  {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
                 </div>
               ) : (
                 <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{activeRoomTab === "season" ? "League stats" : currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
