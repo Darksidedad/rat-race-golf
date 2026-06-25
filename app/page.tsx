@@ -43,6 +43,7 @@ type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string,
 type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
 type SeasonStatsView = "league" | "all";
+type SeasonStatSection = "standings" | "leaders" | "profiles";
 type EditingPick = {
   id: string;
   teamName: string;
@@ -605,6 +606,12 @@ export default function Page() {
   const [seasonStats, setSeasonStats] = useState<SeasonTeamStat[]>([]);
   const [seasonStatsLoading, setSeasonStatsLoading] = useState(false);
   const [seasonStatsView, setSeasonStatsView] = useState<SeasonStatsView>("league");
+  const [seasonStatsYear, setSeasonStatsYear] = useState<number | "all">(CURRENT_GOLF_SEASON);
+  const [seasonStatSections, setSeasonStatSections] = useState<Record<SeasonStatSection, boolean>>({
+    standings: true,
+    leaders: true,
+    profiles: true,
+  });
   const [statusMessage, setStatusMessage] = useState("Loading league data...");
   const [busy, setBusy] = useState("");
   const [activeRoomTab, setActiveRoomTab] = useState<RoomTab>("draft");
@@ -617,9 +624,16 @@ export default function Page() {
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
-  const countedSeasonSessions = useMemo(
-    () => sessions.filter(sessionCountsForSeason),
-    [sessions]
+  const availableSeasonYears = useMemo(() => Array.from(new Set(
+    sessions.map((session) => resolvedSessionSeasons[session.id] ?? sessionEventSeason(session))
+  )).sort((a, b) => b - a), [resolvedSessionSeasons, sessions]);
+  const yearFilteredSessions = useMemo(() => sessions.filter((session) =>
+    seasonStatsYear === "all"
+    || (resolvedSessionSeasons[session.id] ?? sessionEventSeason(session)) === seasonStatsYear
+  ), [resolvedSessionSeasons, seasonStatsYear, sessions]);
+  const yearCountedSeasonSessions = useMemo(
+    () => yearFilteredSessions.filter(sessionCountsForSeason),
+    [yearFilteredSessions]
   );
   const sortedSessions = useMemo(() => [...sessions].sort((a, b) => {
     const aDate = sessionEventDates[a.id] ?? `${resolvedSessionSeasons[a.id] ?? sessionEventSeason(a)}-01-01`;
@@ -627,6 +641,10 @@ export default function Page() {
     const dateDifference = new Date(bDate).getTime() - new Date(aDate).getTime();
     return dateDifference || new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   }), [resolvedSessionSeasons, sessionEventDates, sessions]);
+  const scheduleSessions = useMemo(() => sortedSessions.filter((session) =>
+    seasonStatsYear === "all"
+    || (resolvedSessionSeasons[session.id] ?? sessionEventSeason(session)) === seasonStatsYear
+  ), [resolvedSessionSeasons, seasonStatsYear, sortedSessions]);
   const featuredSession = useMemo(() => {
     if (!sortedSessions.length) return null;
     const now = Date.now();
@@ -659,11 +677,11 @@ export default function Page() {
     });
     return Array.from(groups.entries()).sort(([a], [b]) => b - a);
   }, [featuredSession?.id, resolvedSessionSeasons, sessionEventDates, sortedSessions]);
-  const completedSeasonSessions = useMemo(() => sessions.filter((session) =>
+  const completedSeasonSessions = useMemo(() => yearFilteredSessions.filter((session) =>
     (seasonStatsView === "all" || sessionCountsForSeason(session))
     && (session.status === "scored" || session.status === "finalized")
     && Object.keys(session.current_positions ?? {}).length > 0
-  ), [seasonStatsView, sessions]);
+  ), [seasonStatsView, yearFilteredSessions]);
   const currentLeagueInviteUrl = useMemo(() => {
     if (typeof window === "undefined" || !currentLeague?.slug) return "";
     const url = new URL(window.location.origin + window.location.pathname);
@@ -831,7 +849,7 @@ export default function Page() {
   useEffect(() => {
     if (activeRoomTab !== "season" || !sessions.length) return;
     void loadSeasonStats();
-  }, [activeRoomTab, profiles, seasonStatsView, sessions]);
+  }, [activeRoomTab, profiles, resolvedSessionSeasons, seasonStatsView, seasonStatsYear, sessions]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
   const validDraftOrder = useMemo(() => hasValidDraftOrder(teams), [teams]);
@@ -1459,6 +1477,8 @@ export default function Page() {
 
   async function loadSeasonStats() {
     const eligibleSessions = sessions.filter((session) =>
+      (seasonStatsYear === "all" || (resolvedSessionSeasons[session.id] ?? sessionEventSeason(session)) === seasonStatsYear)
+      &&
       (seasonStatsView === "all" || sessionCountsForSeason(session))
       && (session.status === "scored" || session.status === "finalized")
       && Object.keys(session.current_positions ?? {}).length > 0
@@ -3533,28 +3553,57 @@ export default function Page() {
                 {activeRoomTab === "season" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <h3 className="m-0 font-[Georgia] text-xl">Season Stats</h3>
                           <div className="mt-1 text-sm text-[#617061]">
-                            {seasonStatsView === "league" ? "Official standings from selected league tournaments." : "Comparison standings including every completed tournament and side event."}
+                            {seasonStatsYear === "all" ? "All years" : seasonStatsYear} | {seasonStatsView === "league" ? "Official league tournaments" : "Every tournament and side event"}
                           </div>
                         </div>
-                        <div className="flex rounded-xl border border-[#1a5c3a]/20 bg-white p-1">
-                          <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${seasonStatsView === "league" ? "bg-[#1a5c3a] text-white" : "text-[#1a5c3a]"}`} onClick={() => setSeasonStatsView("league")}>League Season</button>
-                          <button className={`rounded-lg px-3 py-2 text-sm font-semibold ${seasonStatsView === "all" ? "bg-[#1a5c3a] text-white" : "text-[#1a5c3a]"}`} onClick={() => setSeasonStatsView("all")}>All Tournaments</button>
+                        <div className="flex flex-wrap items-start justify-end gap-2">
+                          <label className="grid gap-1 text-[10px] font-semibold uppercase text-[#617061]">
+                            Year
+                            <select className="rounded-lg border border-[#1a5c3a]/20 bg-white px-3 py-2 text-sm font-medium normal-case text-[#1f2a1d]" value={seasonStatsYear} onChange={(event) => setSeasonStatsYear(event.target.value === "all" ? "all" : Number(event.target.value))}>
+                              <option value="all">All Years</option>
+                              {availableSeasonYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                            </select>
+                          </label>
+                          <label className="grid gap-1 text-[10px] font-semibold uppercase text-[#617061]">
+                            Events
+                            <select className="rounded-lg border border-[#1a5c3a]/20 bg-white px-3 py-2 text-sm font-medium normal-case text-[#1f2a1d]" value={seasonStatsView} onChange={(event) => setSeasonStatsView(event.target.value as SeasonStatsView)}>
+                              <option value="league">League Season</option>
+                              <option value="all">All Tournaments</option>
+                            </select>
+                          </label>
+                          <details className="relative">
+                            <summary className="mt-[14px] cursor-pointer list-none rounded-lg border border-[#1a5c3a]/20 bg-white px-3 py-2 text-sm font-semibold text-[#1a5c3a]">Customize</summary>
+                            <div className="absolute right-0 z-20 mt-2 grid w-56 gap-2 rounded-xl border border-black/10 bg-white p-3 shadow-[0_14px_30px_rgba(15,25,18,0.16)]">
+                              {([
+                                ["standings", "Points standings"],
+                                ["leaders", "Performance leaders"],
+                                ["profiles", "Draft and scoring profiles"],
+                              ] as Array<[SeasonStatSection, string]>).map(([section, label]) => (
+                                <label key={section} className="flex items-center gap-2 text-sm">
+                                  <input type="checkbox" checked={seasonStatSections[section]} onChange={(event) => setSeasonStatSections((current) => ({ ...current, [section]: event.target.checked }))} />
+                                  {label}
+                                </label>
+                              ))}
+                            </div>
+                          </details>
                         </div>
                       </div>
                       <div className="mb-4 flex flex-wrap gap-2">
                         <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{completedSeasonSessions.length} completed events</span>
                         <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{seasonStats.length} teams tracked</span>
-                        {seasonStatsView === "league" ? <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{countedSeasonSessions.length} events selected</span> : null}
+                        {seasonStatsView === "league" ? <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{yearCountedSeasonSessions.length} events selected</span> : null}
                       </div>
                       {seasonStatsLoading ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Loading season stats...</div> : !seasonStats.length ? (
                         <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">No completed tournament data is ready for season stats yet.</div>
+                      ) : !Object.values(seasonStatSections).some(Boolean) ? (
+                        <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">Choose at least one section from Customize to display season statistics.</div>
                       ) : (
                         <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-                          <div className="min-w-0 overflow-hidden rounded-2xl border border-black/10 bg-white/85">
+                          {seasonStatSections.standings ? <div className={`${seasonStatSections.leaders ? "" : "xl:col-span-2"} min-w-0 overflow-hidden rounded-2xl border border-black/10 bg-white/85`}>
                             <div className="grid grid-cols-[42px_minmax(100px,1fr)_70px_70px_64px] gap-2 border-b border-black/10 bg-[#f7f2e9] px-3 py-2 text-[10px] font-semibold uppercase text-[#617061]">
                               <span>Rank</span><span>Team</span><span className="text-right">Points</span><span className="text-right">Avg</span><span className="text-right">Events</span>
                             </div>
@@ -3567,8 +3616,8 @@ export default function Page() {
                                 <span className="text-right text-[#617061]">{entry.eventsPlayed}</span>
                               </div>
                             ))}
-                          </div>
-                          <div className="grid content-start gap-2">
+                          </div> : null}
+                          {seasonStatSections.leaders ? <div className={`${seasonStatSections.standings ? "" : "xl:col-span-2"} grid content-start gap-2`}>
                             <h4 className="m-0 font-[Georgia] text-lg">Performance Leaders</h4>
                             {seasonStats.slice(0, 5).map((entry, index) => (
                               <div key={entry.teamName} className="grid grid-cols-[36px_minmax(0,1fr)_repeat(3,52px)] items-center gap-2 rounded-xl border border-black/10 bg-white/85 px-3 py-2 text-sm">
@@ -3579,8 +3628,8 @@ export default function Page() {
                                 <span className="text-center"><span className="block text-[9px] uppercase text-[#617061]">Best</span>{entry.bestFinish ? `#${entry.bestFinish}` : "-"}</span>
                               </div>
                             ))}
-                          </div>
-                          <div className="grid gap-3 xl:col-span-2">
+                          </div> : null}
+                          {seasonStatSections.profiles ? <div className="grid gap-3 xl:col-span-2">
                             <div>
                               <h4 className="m-0 font-[Georgia] text-lg">Draft & Scoring Profiles</h4>
                               <div className="mt-1 text-xs text-[#617061]">Team to par uses the three counting golfers from each event with a recorded final score.</div>
@@ -3627,39 +3676,47 @@ export default function Page() {
                                 </div>
                               ))}
                             </div>
-                          </div>
+                          </div> : null}
                         </div>
                       )}
                     </div>
                     {canManageLeague ? (
-                      <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
-                        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                          <div>
-                            <h3 className="m-0 font-[Georgia] text-xl">Season Tournament Schedule</h3>
-                            <div className="mt-1 text-sm text-[#617061]">Checked events count in the official League Season view. Side events remain included in All Tournaments.</div>
-                          </div>
-                          <div className="flex flex-wrap justify-end gap-2">
-                            <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-sm font-semibold text-[#617061]">
-                              {countedSeasonSessions.length} of {sessions.length} selected
+                      <details className="rounded-2xl border border-black/10 bg-white/60">
+                        <summary className="grid cursor-pointer list-none grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-4">
+                          <span className="min-w-0">
+                            <strong className="block font-[Georgia] text-lg">Manage Tournament Schedule</strong>
+                            <span className="block text-sm text-[#617061]">
+                              {seasonStatsYear === "all" ? "All years" : seasonStatsYear}: {yearCountedSeasonSessions.length} selected of {scheduleSessions.length} tournaments
                             </span>
-                            <span className={`rounded-full px-3 py-1 text-sm font-semibold ${countedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>
-                              Target: {SEASON_EVENT_TARGET}
-                            </span>
+                          </span>
+                          <span className="rounded-lg border border-[#1a5c3a]/20 bg-white px-3 py-2 text-sm font-semibold text-[#1a5c3a]">Edit</span>
+                        </summary>
+                        <div className="border-t border-black/10 p-3">
+                          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#617061]">
+                            <span>Checked events count in League Season. Unchecked events still appear in All Tournaments.</span>
+                            {seasonStatsYear !== "all" ? <span className={`rounded-full px-3 py-1 font-semibold ${yearCountedSeasonSessions.length === SEASON_EVENT_TARGET ? "bg-[#d9eadf] text-[#1a5c3a]" : "bg-[#f6d77a] text-[#6a4b16]"}`}>Target: {SEASON_EVENT_TARGET}</span> : null}
                           </div>
+                          {!scheduleSessions.length ? (
+                            <div className="rounded-xl bg-[#f7f2e9] px-3 py-3 text-sm text-[#617061]">No tournaments are saved for this year.</div>
+                          ) : (
+                            <div className="grid gap-2 md:grid-cols-2">
+                              {scheduleSessions.map((session) => {
+                                const counts = sessionCountsForSeason(session);
+                                return (
+                                  <label key={session.id} className={`grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-xl border border-l-4 px-3 py-2.5 ${counts ? "border-black/10 border-l-[#1a5c3a] bg-white" : "border-black/10 border-l-[#b6aa98] bg-[#f4efe6]"}`}>
+                                    <input type="checkbox" checked={counts} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
+                                    <span className="min-w-0">
+                                      <span className="block truncate text-sm font-semibold">{session.event_name ?? session.name}</span>
+                                      <span className="block text-[11px] text-[#617061]">{formatTournamentDate(sessionEventDates[session.id], resolvedSessionSeasons[session.id] ?? sessionEventSeason(session))}</span>
+                                    </span>
+                                    <span className={`text-[10px] font-semibold uppercase ${counts ? "text-[#1a5c3a]" : "text-[#7b6d5b]"}`}>{counts ? "Counts" : "Side"}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
-                        <div className="grid gap-2">
-                          {sortedSessions.map((session) => (
-                            <label key={session.id} className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-2xl border border-black/10 bg-white/80 px-4 py-3">
-                              <input type="checkbox" checked={sessionCountsForSeason(session)} onChange={(event) => setSessionCountsForSeason(session, event.target.checked)} />
-                              <span className="min-w-0">
-                                <span className="block truncate font-semibold">{session.event_name ?? session.name}</span>
-                                <span className="block text-xs text-[#617061]">{formatTournamentDate(sessionEventDates[session.id], resolvedSessionSeasons[session.id] ?? sessionEventSeason(session))} | {statusLabel(session.status)}</span>
-                              </span>
-                              <span className="text-xs font-medium text-[#617061]">{sessionCountsForSeason(session) ? "Counts" : "Side event"}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
+                      </details>
                     ) : null}
                   </div>
                 ) : null}
