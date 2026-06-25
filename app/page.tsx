@@ -556,7 +556,10 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
         <ellipse cx="57" cy="42" rx="9" ry="3.5" fill="#0b251c" stroke="#f4c75d" strokeWidth="2" />
       </svg>
       <div className="rrg-brand__name">
-        <span className="rrg-brand__primary">Rat Race</span>
+        <span className="rrg-brand__primary">
+          <span>Rat</span>
+          <span>Race</span>
+        </span>
         <span className="rrg-brand__accent">Golf</span>
       </div>
     </div>
