@@ -32,3 +32,9 @@ Use the production URL as the allowed redirect URL:
 ```text
 https://rat-race-golf.vercel.app/**
 ```
+
+## Automatic Leaderboard Refresh
+
+The app includes `/api/leaderboard-refresh` for server-side leaderboard updates. Vercel Hobby projects only allow cron jobs once per day, so `vercel.json` uses a daily schedule to keep production deployments valid.
+
+To refresh every few minutes while players are on course, either upgrade the Vercel project to Pro and change the schedule back to `*/5 * * * *`, or call `/api/leaderboard-refresh` from an external scheduler.
