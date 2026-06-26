@@ -981,16 +981,18 @@ export default function Page() {
     const storedPositions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
     const positions = normalizeStoredPlayoffPositions(storedPositions, totals);
+    const hasSavedLeaderboard = Object.keys(positions).length > 0 || Object.keys(totals).length > 0;
         return assignedTeams.map((team) => {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
           const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
           const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          const storedTotal = parseStoredTotal(total);
-          const storedThru = parseStoredThru(total);
+          const missingFromSavedLeaderboard = hasSavedLeaderboard && position === null && total === null;
+          const storedTotal = missingFromSavedLeaderboard ? "WD" : parseStoredTotal(total);
+          const storedThru = missingFromSavedLeaderboard ? "WD" : parseStoredThru(total);
           const normalizedResult = normalizeLegacyNonScoringResult(position, storedTotal, storedThru);
           const displayTotal = normalizedResult.total;
           const thru = normalizedResult.thru;
-          const meta = parseStoredMeta(total);
+          const meta = missingFromSavedLeaderboard ? null : parseStoredMeta(total);
             return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position), nonScoring: isNonScoringResult(displayTotal, thru) };
           });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
@@ -1648,13 +1650,15 @@ export default function Page() {
       const sessionPicks = (picksBySession.get(session.id) ?? []).sort((a, b) => a.pick_number - b.pick_number);
       const positions = normalizeStoredPlayoffPositions(session.current_positions ?? {}, session.current_totals ?? {});
       const totals = session.current_totals ?? {};
+      const hasSavedLeaderboard = Object.keys(positions).length > 0 || Object.keys(totals).length > 0;
 
         const sessionLeaderboard = sessionTeams.map((team) => {
           const playerScores = sessionPicks.filter((pick) => pick.team_id === team.id).map((pick) => {
             const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
             const storedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-            const parsedTotal = parseStoredTotal(storedTotal);
-            const parsedThru = parseStoredThru(storedTotal);
+            const missingFromSavedLeaderboard = hasSavedLeaderboard && position === null && storedTotal === null;
+            const parsedTotal = missingFromSavedLeaderboard ? "WD" : parseStoredTotal(storedTotal);
+            const parsedThru = missingFromSavedLeaderboard ? "WD" : parseStoredThru(storedTotal);
             const normalizedResult = normalizeLegacyNonScoringResult(position, parsedTotal, parsedThru);
             return {
               pick,
