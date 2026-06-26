@@ -299,6 +299,11 @@ function parseStoredTotal(total: string | null | undefined) {
   return score || null;
 }
 
+function encodeStoredTotal(total: string | null | undefined, thru: string | null | undefined) {
+  if (!total && !thru) return null;
+  return `${total ?? ""}||${thru ?? ""}||`;
+}
+
 function parseStoredThru(total: string | null | undefined) {
   if (!total || !total.includes("||")) return null;
   const [, thru] = total.split("||");
@@ -981,18 +986,24 @@ export default function Page() {
     const storedPositions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
     const positions = normalizeStoredPlayoffPositions(storedPositions, totals);
+    const livePositions = Object.fromEntries(tournamentLeaderboardRows.map((row) => [row.name, row.position]));
+    const liveTotals = Object.fromEntries(tournamentLeaderboardRows.map((row) => [row.name, encodeStoredTotal(row.total, row.thru)]));
     const hasSavedLeaderboard = Object.keys(positions).length > 0 || Object.keys(totals).length > 0;
+    const hasLiveLeaderboard = tournamentLeaderboardRows.length > 0;
         return assignedTeams.map((team) => {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
-          const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
-          const total = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          const missingFromSavedLeaderboard = hasSavedLeaderboard && position === null && total === null;
-          const storedTotal = missingFromSavedLeaderboard ? "WD" : parseStoredTotal(total);
-          const storedThru = missingFromSavedLeaderboard ? "WD" : parseStoredThru(total);
+          const savedPosition = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+          const savedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+          const shouldUseLiveFallback = savedPosition === null && savedTotal === null;
+          const position = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, livePositions) ?? null : savedPosition;
+          const total = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, liveTotals) ?? null : savedTotal;
+          const missingFromLeaderboard = (hasSavedLeaderboard || hasLiveLeaderboard) && position === null && total === null;
+          const storedTotal = missingFromLeaderboard ? "WD" : parseStoredTotal(total);
+          const storedThru = missingFromLeaderboard ? "WD" : parseStoredThru(total);
           const normalizedResult = normalizeLegacyNonScoringResult(position, storedTotal, storedThru);
           const displayTotal = normalizedResult.total;
           const thru = normalizedResult.thru;
-          const meta = missingFromSavedLeaderboard ? null : parseStoredMeta(total);
+          const meta = missingFromLeaderboard ? null : parseStoredMeta(total);
             return { ...pick, position, total: displayTotal, thru, meta, points: pointsForPosition(position), nonScoring: isNonScoringResult(displayTotal, thru) };
           });
       const total = [...playerScores].map((player) => player.points).sort((a, b) => b - a).slice(0, 3).reduce((sum, value) => sum + value, 0);
@@ -1004,7 +1015,7 @@ export default function Page() {
       );
       return { team, playerScores, total, countingKeys };
     }).sort((a, b) => b.total - a.total);
-  }, [assignedTeams, currentSession?.current_positions, currentSession?.current_totals, picks]);
+  }, [assignedTeams, currentSession?.current_positions, currentSession?.current_totals, picks, tournamentLeaderboardRows]);
   const resultsUpdatedLabel = useMemo(() => {
     if (!currentSession?.updated_at) return "Not updated yet";
     return new Date(currentSession.updated_at).toLocaleString(undefined, {
