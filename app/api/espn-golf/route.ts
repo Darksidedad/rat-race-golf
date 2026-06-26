@@ -354,6 +354,9 @@ function normalizeName(name: string) {
   return name
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[øØ]/g, "o")
+    .replace(/[æÆ]/g, "ae")
+    .replace(/[åÅ]/g, "a")
     .toLowerCase()
     .replace(/\s*\/\s*/g, "/")
     .replace(/\./g, "")
