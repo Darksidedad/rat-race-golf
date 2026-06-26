@@ -2481,7 +2481,26 @@ export default function Page() {
     setBusy("");
   }
 
+  async function refreshResultsView() {
+    if (!currentSession) return;
+    const sessionId = currentSession.id;
+    setBusy("Refreshing view...");
+    try {
+      await loadSessions();
+      await loadSession(sessionId, false);
+      if (activeRoomTab === "results" && currentSession.event_id) {
+        await loadTournamentLeaderboard(false);
+      }
+      setStatusMessage("Refreshed the latest saved leaderboard view.");
+    } catch (error) {
+      console.error(error);
+      setStatusMessage("Could not refresh the leaderboard view.");
+    }
+    setBusy("");
+  }
+
   async function pullLeaderboard() {
+    if (!canManageLeague) return refreshResultsView();
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before pulling leaderboard results.");
     if (currentSession.status === "finalized") return setStatusMessage("This tournament is finalized. Reopen results before refreshing the leaderboard.");
     setBusy("Pulling leaderboard...");
@@ -3216,7 +3235,9 @@ export default function Page() {
               <div className="flex flex-wrap justify-end gap-2 xl:justify-self-end">
                 {activeRoomTab === "results" && currentSession ? (
                   <>
-                    <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={pullLeaderboard}>{busy === "Pulling leaderboard..." ? "Refreshing..." : "Refresh Results"}</button>
+                    <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={canManageLeague ? pullLeaderboard : refreshResultsView}>
+                      {busy === "Pulling leaderboard..." || busy === "Refreshing view..." ? "Refreshing..." : canManageLeague ? "Update Scores" : "Refresh View"}
+                    </button>
                     {canManageLeague ? (
                       resultsFinalized
                         ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={reopenFinalizedResults}>Reopen Results</button>
