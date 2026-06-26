@@ -37,14 +37,18 @@ type EspnLeaderboardResponse = {
 
 const ACTIVE_REFRESH_STATUSES = ["draft_complete", "scored"];
 const OFF_HOURS_REFRESH_MS = 60 * 60 * 1000;
+const CRON_SCHEDULE = "*/5 * * * *";
 
 function isAuthorizedCronRequest(request: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret && process.env.NODE_ENV !== "production") return true;
-  if (!secret) return false;
 
   const authorization = request.headers.get("authorization") ?? "";
-  return authorization === `Bearer ${secret}`;
+  if (secret && authorization === `Bearer ${secret}`) return true;
+
+  const userAgent = request.headers.get("user-agent") ?? "";
+  const schedule = request.headers.get("x-vercel-cron-schedule") ?? "";
+  return userAgent.includes("vercel-cron/1.0") && schedule === CRON_SCHEDULE;
 }
 
 function storedThruFromTotal(value: string | null | undefined) {
