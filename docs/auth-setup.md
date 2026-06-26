@@ -35,6 +35,6 @@ https://rat-race-golf.vercel.app/**
 
 ## Automatic Leaderboard Refresh
 
-The app includes `/api/leaderboard-refresh` for server-side leaderboard updates. Vercel Hobby projects only allow cron jobs once per day, so `vercel.json` uses a daily schedule to keep production deployments valid.
+The app includes `/api/leaderboard-refresh` for server-side leaderboard updates. Native Vercel cron is not currently configured because the project deployment rejected the frequent cron schedule.
 
-To refresh every few minutes while players are on course, either upgrade the Vercel project to Pro and change the schedule back to `*/5 * * * *`, or call `/api/leaderboard-refresh` from an external scheduler.
+To refresh every few minutes while players are on course, either configure Vercel cron on a plan/settings combination that supports the desired schedule, or call `/api/leaderboard-refresh` from an external scheduler.
