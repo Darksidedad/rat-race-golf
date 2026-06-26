@@ -110,6 +110,12 @@ const INVALID_PLAYER_TERMS = [
 
 function normalizeName(name: string) {
   return name
+    .replace(/\u00c3\u00b8/g, "o")
+    .replace(/\u00c3\u0098/g, "o")
+    .replace(/\u00c3\u00a6/g, "ae")
+    .replace(/\u00c3\u0086/g, "ae")
+    .replace(/\u00c3\u00a5/g, "a")
+    .replace(/\u00c3\u0085/g, "a")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[øØ]/g, "o")
@@ -527,6 +533,18 @@ function lookupLeaderboardValue<T>(playerName: string, values: Record<string, T>
 
   const normalizedKey = Object.keys(values).find((valueKey) => normalizeName(valueKey) === key);
   if (normalizedKey) return values[normalizedKey];
+
+  const [firstName, ...remainingParts] = key.split(" ").filter(Boolean);
+  const lastName = remainingParts.at(-1);
+  if (firstName && lastName) {
+    const nameMatchedKey = Object.keys(values).find((valueKey) => {
+      const [valueFirstName, ...valueRemainingParts] = normalizeName(valueKey).split(" ").filter(Boolean);
+      const valueLastName = valueRemainingParts.at(-1);
+      if (!valueFirstName || valueLastName !== lastName) return false;
+      return valueFirstName === firstName || valueFirstName[0] === firstName[0] || firstName.startsWith(valueFirstName);
+    });
+    if (nameMatchedKey) return values[nameMatchedKey];
+  }
 
   const signature = teamLastNameSignature(playerName);
   if (!signature) return undefined;

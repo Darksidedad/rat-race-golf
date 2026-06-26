@@ -352,6 +352,12 @@ function splitCourseAndLocation(rawLocation: string | undefined) {
 
 function normalizeName(name: string) {
   return name
+    .replace(/\u00c3\u00b8/g, "o")
+    .replace(/\u00c3\u0098/g, "o")
+    .replace(/\u00c3\u00a6/g, "ae")
+    .replace(/\u00c3\u0086/g, "ae")
+    .replace(/\u00c3\u00a5/g, "a")
+    .replace(/\u00c3\u0085/g, "a")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[øØ]/g, "o")
