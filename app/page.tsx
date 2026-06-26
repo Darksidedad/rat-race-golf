@@ -89,6 +89,7 @@ const TOUR_OPTIONS = [
   { id: "champions", label: "PGA TOUR Champions" },
   { id: "liv", label: "LIV Golf" },
 ];
+const LIVE_DATA_FETCH_OPTIONS: RequestInit = { cache: "no-store" };
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",
@@ -803,6 +804,29 @@ export default function Page() {
       .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
+  }, [selectedSessionId, user]);
+
+  useEffect(() => {
+    if (!selectedSessionId || !user) return;
+
+    const refreshSelectedSession = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void loadSessions();
+      void loadSession(selectedSessionId, false);
+    };
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refreshSelectedSession();
+    };
+    const interval = window.setInterval(refreshSelectedSession, 60 * 1000);
+
+    window.addEventListener("focus", refreshSelectedSession);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshSelectedSession);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
   }, [selectedSessionId, user]);
 
   useEffect(() => {
@@ -1857,7 +1881,7 @@ export default function Page() {
     ]));
     const eventCollections = await Promise.all(tours.flatMap((tour) => seasons.map(async (season) => {
       try {
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tour)}&season=${season}`);
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tour)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
         const payload: EspnEventsResponse = await response.json();
         return payload.ok && payload.events ? payload.events : [];
       } catch (error) {
@@ -1908,7 +1932,7 @@ export default function Page() {
 
   async function loadEvents(tourId = newDraftTour, season = newDraftSeason) {
     try {
-      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${season}`);
+      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
       const payload: EspnEventsResponse = await response.json();
       if (!payload.ok || !payload.events) throw new Error(payload.error);
       setEvents(payload.events);
@@ -1931,7 +1955,7 @@ export default function Page() {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
         const seasonQuery = resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession);
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`);
+        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`, LIVE_DATA_FETCH_OPTIONS);
         const payload: EspnEventsResponse = await response.json();
         if (!payload.ok || !payload.events) continue;
         const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
@@ -1949,7 +1973,7 @@ export default function Page() {
 
   async function loadOdds(eventName: string, season = CURRENT_GOLF_SEASON) {
     try {
-      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}&season=${season}`);
+      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
       const payload: EspnOddsResponse = await response.json();
       if (!payload.ok || !payload.odds) {
         setOddsByPlayer({});
@@ -2241,7 +2265,7 @@ export default function Page() {
 
   async function fetchEspnFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
     const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
-    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
+    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
     const payload: EspnFieldResponse = await response.json();
     if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
     const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
@@ -2250,7 +2274,7 @@ export default function Page() {
     let oddsSource = "";
     if (payload.eventName) {
       try {
-        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}&season=${season}`);
+        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
         const oddsPayload: EspnOddsResponse = await oddsResponse.json();
         odds = oddsPayload.ok && oddsPayload.odds ? oddsPayload.odds : {};
         oddsSource = oddsPayload.source ?? "";
@@ -2463,7 +2487,7 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
+      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       const payload: EspnLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
@@ -2489,7 +2513,7 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
+      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       const payload: TournamentLeaderboardResponse = await response.json();
       if (!payload.ok || !payload.rows) throw new Error(payload.error);
       setTournamentLeaderboardRows(payload.rows);
