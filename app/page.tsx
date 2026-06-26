@@ -43,6 +43,7 @@ type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: 
 type TournamentLeaderboardRow = { name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null };
 type TournamentLeaderboardResponse = EspnLeaderboardResponse & { rows?: TournamentLeaderboardRow[] };
 type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
+type SocialProvider = "google" | "facebook" | "apple";
 type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
 type SeasonStatsView = "league" | "all";
@@ -392,6 +393,19 @@ function formatProfileLabel(username: string, teamName: string | null | undefine
   const trimmedTeam = teamName?.trim();
   if (!trimmedTeam) return username;
   return normalizeName(trimmedTeam) === normalizeName(username) ? username : `${username} (${trimmedTeam})`;
+}
+
+function authRedirectUrl(mode?: "recovery") {
+  if (typeof window === "undefined") return undefined;
+  const url = new URL(window.location.href);
+  url.hash = "";
+  if (mode === "recovery") {
+    url.search = "";
+    url.searchParams.set("type", "recovery");
+  } else {
+    url.searchParams.delete("type");
+  }
+  return url.toString();
 }
 
 function getAssignedActiveTeams(teams: DraftTeam[]) {
@@ -1294,7 +1308,7 @@ export default function Page() {
 
     setBusy("Sending reset email...");
     const { error } = await supabase.auth.resetPasswordForEmail(authEmail.trim(), {
-      redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+      redirectTo: authRedirectUrl("recovery"),
     });
     setBusy("");
 
@@ -1305,6 +1319,22 @@ export default function Page() {
     }
 
     setStatusMessage("Password reset email sent. Open the link in that email and set your new password.");
+  }
+
+  async function signInWithProvider(provider: SocialProvider) {
+    setBusy(`Opening ${provider} sign in...`);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: {
+        redirectTo: authRedirectUrl(),
+      },
+    });
+
+    if (error) {
+      console.error(error);
+      setBusy("");
+      setStatusMessage(error.message || `Could not start ${provider} sign in.`);
+    }
   }
 
   function handleAuthPasswordKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -2832,6 +2862,26 @@ export default function Page() {
             <div className="flex flex-wrap gap-3">
               <button className={`rounded-full px-4 py-2 ${authMode === "sign_in" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setAuthMode("sign_in")}>Sign In</button>
               <button className={`rounded-full px-4 py-2 ${authMode === "sign_up" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setAuthMode("sign_up")}>Create Account</button>
+            </div>
+
+            <div className="grid gap-2">
+              <button className="rounded-full border border-black/10 bg-white px-4 py-3 text-sm font-semibold text-[#1f2a1d] shadow-sm" onClick={() => signInWithProvider("google")}>
+                Continue with Google
+              </button>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button className="rounded-full border border-black/10 bg-white px-4 py-3 text-sm font-semibold text-[#1f2a1d] shadow-sm" onClick={() => signInWithProvider("apple")}>
+                  Continue with Apple
+                </button>
+                <button className="rounded-full border border-black/10 bg-white px-4 py-3 text-sm font-semibold text-[#1f2a1d] shadow-sm" onClick={() => signInWithProvider("facebook")}>
+                  Continue with Facebook
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 text-xs font-semibold uppercase tracking-[0.12em] text-[#617061]">
+              <span className="h-px flex-1 bg-black/10" />
+              <span>Email</span>
+              <span className="h-px flex-1 bg-black/10" />
             </div>
 
             <div className="grid gap-3">
