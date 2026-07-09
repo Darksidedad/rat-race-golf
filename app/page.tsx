@@ -399,7 +399,7 @@ function resultStatusLabel(position: number | null, total: string | null | undef
   const normalizedThru = normalizeStoredThru(thru);
   const playoff = playoffLabel(meta);
   if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : normalizedThru ? ` - ${normalizedThru}` : ""}`;
-  if (!total && !normalizedThru && !playoff) return "No leaderboard match";
+  if (!total && !normalizedThru && !playoff) return "WD";
   return playoff ?? normalizedThru ?? "CUT / no finish";
 }
 
