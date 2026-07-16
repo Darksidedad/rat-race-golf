@@ -23,6 +23,15 @@ http://localhost:3000/api/data-golf?action=outright-odds&tour=pga&market=win
 http://localhost:3000/api/data-golf?action=pre-tournament&tour=pga&odds_format=american
 ```
 
+These Rat Race-shaped endpoints are what the app uses:
+
+```text
+http://localhost:3000/api/data-golf?action=app-events&tour=pga&season=2026
+http://localhost:3000/api/data-golf?action=app-field&tour=pga
+http://localhost:3000/api/data-golf?action=app-odds&tour=pga&market=win
+http://localhost:3000/api/data-golf?action=app-leaderboard&tour=pga
+```
+
 ## Supported Proxy Actions
 
 - `player-list`
@@ -45,6 +54,14 @@ http://localhost:3000/api/data-golf?action=pre-tournament&tour=pga&odds_format=a
 3. Replace live scoring with a Data Golf-backed leaderboard normalizer once we verify the live scoring fields available in the subscribed feed.
 4. Replace historical scoring corrections with `historical-event-results` and `historical-raw-rounds`.
 5. Keep ESPN as a temporary fallback until the Data Golf shapes are validated for active, completed, cut, WD, and playoff cases.
+
+## Current Local Migration Status
+
+- Event selection now uses Data Golf through `app-events`.
+- New draft field imports now use Data Golf through `app-field`.
+- Draft odds now use Data Golf outright odds through `app-odds`.
+- Results refresh and the tournament leaderboard now use Data Golf live predictions through `app-leaderboard`.
+- ESPN remains as fallback for older saved sessions whose event IDs came from ESPN.
 
 ## Product Ideas From Data Golf
 

@@ -37,12 +37,12 @@ type DraftPick = { id: string; session_id: string; team_id: string; player_name:
 type League = { id: string; name: string; slug: string; created_by: string | null; created_at: string };
 type LeagueMembership = { id: string; league_id: string; user_id: string; role: Profile["role"]; claimed_team_name: string | null; created_at: string };
 type NewDraftTeam = { name: string; selected: boolean };
-type EspnEventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
-type EspnFieldResponse = { ok: boolean; eventName?: string; players?: string[]; source?: string; error?: string };
-type EspnLeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
+type EventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
+type FieldResponse = { ok: boolean; eventName?: string; players?: string[]; odds?: Record<string, number>; oddsSource?: string; source?: string; error?: string };
+type LeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
 type TournamentLeaderboardRow = { name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null };
-type TournamentLeaderboardResponse = EspnLeaderboardResponse & { rows?: TournamentLeaderboardRow[] };
-type EspnOddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
+type TournamentLeaderboardResponse = LeaderboardResponse & { rows?: TournamentLeaderboardRow[] };
+type OddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
 type SocialProvider = "google" | "facebook" | "apple";
 type PlayerPoolEntry = { name: string; odds?: number };
 type RoomTab = "setup" | "admin" | "draft" | "results" | "profile" | "season";
@@ -141,6 +141,16 @@ function formatRefreshTime(value: string | null | undefined) {
   return new Date(value).toLocaleString();
 }
 
+async function readJsonResponse<T>(response: Response) {
+  const text = await response.text();
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
 function formatTournamentDate(value: string | null | undefined, season: number | null | undefined) {
   if (!value) return String(season ?? "");
   return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
@@ -153,6 +163,30 @@ function isMissingColumnError(error: { message?: string; code?: string } | null 
 
 function formatEventDropdownOption(event: EventOption) {
   return event.dateLabel ? `${event.name} (${event.dateLabel})` : event.name;
+}
+
+function preferredEventId(events: EventOption[]) {
+  if (!events.length) return "";
+  const today = new Date();
+  const todayUtc = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+  const eventsWithDates = events
+    .map((event) => {
+      const time = event.startDate ? new Date(event.startDate).getTime() : Number.NaN;
+      return { event, time };
+    })
+    .filter((entry) => Number.isFinite(entry.time));
+
+  const activeWindow = eventsWithDates
+    .filter((entry) => entry.time <= todayUtc && todayUtc - entry.time <= 4 * 24 * 60 * 60 * 1000)
+    .sort((a, b) => b.time - a.time)[0];
+  if (activeWindow) return activeWindow.event.id;
+
+  const nextUpcoming = eventsWithDates
+    .filter((entry) => entry.time > todayUtc)
+    .sort((a, b) => a.time - b.time)[0];
+  if (nextUpcoming) return nextUpcoming.event.id;
+
+  return eventsWithDates.sort((a, b) => b.time - a.time)[0]?.event.id ?? events[0]?.id ?? "";
 }
 
 function sessionCountsForSeason(session: DraftSession) {
@@ -502,6 +536,8 @@ function formatPlayerPoolInput(input: string) {
 function lookupOddsForPlayer(playerName: string, oddsMap: Record<string, number>) {
   const key = normalizeName(playerName);
   if (Number.isFinite(oddsMap[key])) return oddsMap[key];
+  const normalizedMatchedKey = Object.keys(oddsMap).find((oddsKey) => normalizeName(oddsKey) === key);
+  if (normalizedMatchedKey && Number.isFinite(oddsMap[normalizedMatchedKey])) return oddsMap[normalizedMatchedKey];
 
   const signature = teamLastNameSignature(playerName);
   if (signature) {
@@ -593,6 +629,7 @@ function BrandMark({ compact = false }: { compact?: boolean }) {
 export default function Page() {
   const draftFlowRef = useRef<HTMLDivElement | null>(null);
   const sessionDateLoadRequestRef = useRef(0);
+  const eventLoadRequestRef = useRef(0);
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -839,9 +876,9 @@ export default function Page() {
     loadSession(selectedSessionId);
     const channel = supabase
       .channel(`draft-${selectedSessionId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions", filter: `id=eq.${selectedSessionId}` }, () => { loadSessions(); loadSession(selectedSessionId); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_teams", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false))
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions", filter: `id=eq.${selectedSessionId}` }, () => { loadSessions(); loadSession(selectedSessionId, false, false); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_teams", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, [selectedSessionId, user]);
@@ -852,7 +889,7 @@ export default function Page() {
     const refreshSelectedSession = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       void loadSessions();
-      void loadSession(selectedSessionId, false);
+      void loadSession(selectedSessionId, false, false);
     };
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refreshSelectedSession();
@@ -1847,7 +1884,7 @@ export default function Page() {
       ownerId ? `Assigned ${team.name} to ${selectedProfile?.username ?? "that member"}.` : `Removed the owner for ${team.name}.`
     );
     await loadProfiles();
-    if (currentSession) await loadSession(currentSession.id, false);
+    if (currentSession) await loadSession(currentSession.id, false, false);
   }
 
   async function updateMemberRole(profileEntry: Profile, nextRole: "assistant_commissioner" | "member") {
@@ -1872,7 +1909,7 @@ export default function Page() {
 
     setStatusMessage(`Updated ${profileEntry.username} to ${roleLabel(nextRole).toLowerCase()}.`);
     await loadProfiles();
-    if (currentSession) await loadSession(currentSession.id, false);
+    if (currentSession) await loadSession(currentSession.id, false, false);
   }
 
   async function removeMember(profileEntry: Profile) {
@@ -1904,7 +1941,7 @@ export default function Page() {
     setStatusMessage(`Removed ${profileEntry.username}'s account.`);
     await loadProfiles();
     await loadSessions();
-    if (currentSession) await loadSession(currentSession.id, false);
+    if (currentSession) await loadSession(currentSession.id, false, false);
   }
 
   async function signOut() {
@@ -1947,9 +1984,9 @@ export default function Page() {
     ]));
     const eventCollections = await Promise.all(tours.flatMap((tour) => seasons.map(async (season) => {
       try {
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tour)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
-        const payload: EspnEventsResponse = await response.json();
-        return payload.ok && payload.events ? payload.events : [];
+        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tour)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+        const payload = await readJsonResponse<EventsResponse>(response);
+        return payload?.ok && payload.events ? payload.events : [];
       } catch (error) {
         console.error(error);
         return [];
@@ -1971,7 +2008,7 @@ export default function Page() {
     }
   }
 
-  async function loadSession(sessionId: string, setLoading = true) {
+  async function loadSession(sessionId: string, setLoading = true, syncTab = true) {
     if (setLoading) setBusy("Loading session...");
     const [sessionResult, teamsResult, picksResult] = await Promise.all([
       supabase.from("draft_sessions").select("*").eq("id", sessionId).maybeSingle(),
@@ -1988,26 +2025,33 @@ export default function Page() {
     setCurrentSession(nextSession);
     setTeams((teamsResult.data as DraftTeam[]) ?? []);
     setPicks((picksResult.data as DraftPick[]) ?? []);
-    if (nextSession?.status === "draft_complete" || nextSession?.status === "scored" || nextSession?.status === "finalized") {
-      setActiveRoomTab("results");
-    } else if (activeRoomTab === "results" && nextSession?.status === "setup") {
-      setActiveRoomTab("draft");
+    if (syncTab) {
+      if (nextSession?.status === "draft_complete" || nextSession?.status === "scored" || nextSession?.status === "finalized") {
+        setActiveRoomTab("results");
+      } else if (activeRoomTab === "results" && nextSession?.status === "setup") {
+        setActiveRoomTab("draft");
+      }
     }
     setBusy("");
   }
 
   async function loadEvents(tourId = newDraftTour, season = newDraftSeason) {
+    const requestId = ++eventLoadRequestRef.current;
+    setEvents([]);
+    setNewSessionEventId("");
     try {
-      const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
-      const payload: EspnEventsResponse = await response.json();
-      if (!payload.ok || !payload.events) throw new Error(payload.error);
+      const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      const payload = await readJsonResponse<EventsResponse>(response);
+      if (!payload?.ok || !payload.events) throw new Error(payload?.error ?? "Data Golf did not return events.");
+      if (requestId !== eventLoadRequestRef.current) return;
       setEvents(payload.events);
-      setNewSessionEventId((current) => payload.events?.some((event) => event.id === current) ? current : payload.events?.[0]?.id ?? "");
+      setNewSessionEventId((current) => payload.events?.some((event) => event.id === current) ? current : preferredEventId(payload.events ?? []));
     } catch (error) {
+      if (requestId !== eventLoadRequestRef.current) return;
       console.error(error);
       setEvents([]);
       setNewSessionEventId("");
-      setStatusMessage(`Could not load ${season} ${TOUR_OPTIONS.find((tour) => tour.id === tourId)?.label ?? "tour"} events from ESPN.`);
+      setStatusMessage(`Could not load ${season} ${TOUR_OPTIONS.find((tour) => tour.id === tourId)?.label ?? "tour"} events from Data Golf.`);
     }
   }
 
@@ -2021,9 +2065,9 @@ export default function Page() {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
         const seasonQuery = resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession);
-        const response = await fetch(`/api/espn-golf?action=events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`, LIVE_DATA_FETCH_OPTIONS);
-        const payload: EspnEventsResponse = await response.json();
-        if (!payload.ok || !payload.events) continue;
+        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`, LIVE_DATA_FETCH_OPTIONS);
+        const payload = await readJsonResponse<EventsResponse>(response);
+        if (!payload?.ok || !payload.events) continue;
         const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
         if (eventDetails) {
           setCurrentSessionEventDetails(eventDetails);
@@ -2039,9 +2083,9 @@ export default function Page() {
 
   async function loadOdds(eventName: string, season = CURRENT_GOLF_SEASON) {
     try {
-      const response = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(eventName)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
-      const payload: EspnOddsResponse = await response.json();
-      if (!payload.ok || !payload.odds) {
+      const response = await fetch(`/api/data-golf?action=app-odds&tour=${encodeURIComponent(currentSession?.event_tour ?? newDraftTour)}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+      const payload = await readJsonResponse<OddsResponse>(response);
+      if (!payload?.ok || !payload.odds) {
         setOddsByPlayer({});
         return;
       }
@@ -2069,7 +2113,7 @@ export default function Page() {
     }
     setStatusMessage(message);
     await loadSessions();
-    await loadSession(currentSession.id, false);
+    await loadSession(currentSession.id, false, false);
     return true;
   }
 
@@ -2112,7 +2156,7 @@ export default function Page() {
     setStatusMessage(`${session.event_name ?? session.name} ${countsForSeason ? "now counts" : "no longer counts"} toward season stats.`);
   }
 
-  async function saveFieldSnapshot(sessionId: string, field: Awaited<ReturnType<typeof fetchEspnFieldInput>>, eventName: string | null | undefined, message: string) {
+  async function saveFieldSnapshot(sessionId: string, field: Awaited<ReturnType<typeof fetchDataGolfFieldInput>>, eventName: string | null | undefined, message: string) {
     const refreshedAt = new Date().toISOString();
     const snapshotPatch = {
       player_input: field.playerInput,
@@ -2139,7 +2183,7 @@ export default function Page() {
     setOddsByPlayer(field.odds);
     setStatusMessage(message);
     await loadSessions();
-    await loadSession(sessionId, false);
+    await loadSession(sessionId, false, false);
     return true;
   }
 
@@ -2156,6 +2200,41 @@ export default function Page() {
     }
     if (message) setStatusMessage(message);
     return true;
+  }
+
+  async function moveDraftTeam(teamId: string, direction: -1 | 1) {
+    if (!canManageLeague) return setStatusMessage("Only the commissioner can edit draft order.");
+    if (picks.length) return setStatusMessage("Draft order is locked after the first pick. Undo picks before changing it.");
+    const orderedTeams = getAssignedActiveTeams(teams);
+    const currentIndex = orderedTeams.findIndex((team) => team.id === teamId);
+    const targetIndex = currentIndex + direction;
+    if (currentIndex < 0 || targetIndex < 0 || targetIndex >= orderedTeams.length) return;
+
+    const currentTeam = orderedTeams[currentIndex];
+    const targetTeam = orderedTeams[targetIndex];
+    const currentSlot = currentTeam.draft_slot ?? currentIndex + 1;
+    const targetSlot = targetTeam.draft_slot ?? targetIndex + 1;
+
+    setTeams((current) => current.map((team) => {
+      if (team.id === currentTeam.id) return { ...team, draft_slot: targetSlot };
+      if (team.id === targetTeam.id) return { ...team, draft_slot: currentSlot };
+      return team;
+    }));
+
+    const [firstUpdate, secondUpdate] = await Promise.all([
+      supabase.from("draft_teams").update({ draft_slot: targetSlot }).eq("id", currentTeam.id),
+      supabase.from("draft_teams").update({ draft_slot: currentSlot }).eq("id", targetTeam.id),
+    ]);
+
+    if (firstUpdate.error || secondUpdate.error) {
+      console.error(firstUpdate.error, secondUpdate.error);
+      setStatusMessage("Could not save the draft order change.");
+      await loadSession(selectedSessionId, false, false);
+      return;
+    }
+
+    setStatusMessage(`Moved ${currentTeam.name} to draft slot ${targetSlot}.`);
+    await loadSession(selectedSessionId, false, false);
   }
 
   async function addTeam() {
@@ -2196,7 +2275,7 @@ export default function Page() {
     setNewTeamName("");
     setBusy("");
     setStatusMessage(`Added team "${trimmedName}".`);
-    await loadSession(currentSession.id, false);
+    await loadSession(currentSession.id, false, false);
   }
 
   async function deleteTeam(team: DraftTeam) {
@@ -2221,7 +2300,7 @@ export default function Page() {
 
     setBusy("");
     setStatusMessage(`Deleted team "${team.name}".`);
-    await loadSession(selectedSessionId, false);
+    await loadSession(selectedSessionId, false, false);
   }
 
   async function deleteSession(session: DraftSession) {
@@ -2329,21 +2408,25 @@ export default function Page() {
     window.open("https://www.online-stopwatch.com/duck-race/", "_blank", "noopener,noreferrer");
   }
 
-  async function fetchEspnFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
+  async function fetchDataGolfFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
     const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
-    const response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
-    const payload: EspnFieldResponse = await response.json();
-    if (!payload.ok || !payload.players?.length) throw new Error(payload.error || "ESPN did not return any golfers for that event yet.");
+    let response = await fetch(`/api/data-golf?action=app-field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+    let payload = await readJsonResponse<FieldResponse>(response);
+    if (!payload?.ok && !eventId.startsWith("dg:")) {
+      response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      payload = await readJsonResponse<FieldResponse>(response);
+    }
+    if (!payload?.ok || !payload.players?.length) throw new Error(payload?.error || "Data Golf did not return any golfers for that event yet.");
     const cleanedPlayers = parsePlayerPoolInput(payload.players.join("\n"));
-    if (!cleanedPlayers.length) throw new Error("ESPN returned a field, but no valid golfer names were found.");
-    let odds: Record<string, number> = {};
-    let oddsSource = "";
-    if (payload.eventName) {
+    if (!cleanedPlayers.length) throw new Error("Data Golf returned a field, but no valid golfer names were found.");
+    let odds: Record<string, number> = payload.odds ?? {};
+    let oddsSource = payload.oddsSource ?? "";
+    if (!Object.keys(odds).length && payload.eventName) {
       try {
-        const oddsResponse = await fetch(`/api/espn-golf?action=odds&eventName=${encodeURIComponent(payload.eventName)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
-        const oddsPayload: EspnOddsResponse = await oddsResponse.json();
-        odds = oddsPayload.ok && oddsPayload.odds ? oddsPayload.odds : {};
-        oddsSource = oddsPayload.source ?? "";
+        const oddsResponse = await fetch(`/api/data-golf?action=app-odds${tourQuery}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+        const oddsPayload = await readJsonResponse<OddsResponse>(oddsResponse);
+        odds = oddsPayload?.ok && oddsPayload.odds ? oddsPayload.odds : {};
+        oddsSource = oddsPayload?.source ?? "";
       } catch (error) {
         console.error(error);
       }
@@ -2373,9 +2456,9 @@ export default function Page() {
     let importedPlayerCount = 0;
     let importedOddsCount = 0;
     let fieldImportMessage = "";
-    let importedField: Awaited<ReturnType<typeof fetchEspnFieldInput>> | null = null;
+    let importedField: Awaited<ReturnType<typeof fetchDataGolfFieldInput>> | null = null;
     try {
-      const field = await fetchEspnFieldInput(event.id, newDraftTour, newDraftSeason);
+      const field = await fetchDataGolfFieldInput(event.id, newDraftTour, newDraftSeason);
       importedField = field;
       playerInput = field.playerInput;
       importedPlayerCount = field.playerCount;
@@ -2383,7 +2466,7 @@ export default function Page() {
       setOddsByPlayer(field.odds);
     } catch (error) {
       console.error(error);
-      fieldImportMessage = error instanceof Error && error.message ? ` ESPN field was not imported: ${error.message}` : " ESPN field was not imported yet.";
+      fieldImportMessage = error instanceof Error && error.message ? ` Data Golf field was not imported: ${error.message}` : " Data Golf field was not imported yet.";
     }
     const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
     let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
@@ -2444,7 +2527,7 @@ export default function Page() {
       }
     }
     setStatusMessage("Repaired the draft order.");
-    await loadSession(selectedSessionId, false);
+    await loadSession(selectedSessionId, false, false);
   }
 
     async function savePlayerPool() {
@@ -2462,14 +2545,14 @@ export default function Page() {
       setBusy("");
   }
 
-  async function importFieldFromEspn() {
+  async function importFieldFromDataGolf() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can import the field.");
     if (!currentSession?.event_id) return setStatusMessage("Pick a PGA event before importing the field.");
     if (picks.length) return setStatusMessage("The field and odds are locked after the first pick. Reopen this only by undoing picks first.");
     setBusy("Importing field...");
     try {
-        const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
-        await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN after cleaning duplicates, team rows, and invalid rows.`);
+        const field = await fetchDataGolfFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
+        await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from Data Golf after cleaning duplicates, team rows, and invalid rows.`);
       } catch (error) {
         console.error(error);
         const tourLabel = TOUR_OPTIONS.find((tour) => tour.id === currentSession.event_tour)?.label ?? "the selected tour";
@@ -2486,10 +2569,10 @@ export default function Page() {
     if (autoFieldImportAttempts[currentSession.id]) return;
 
     setAutoFieldImportAttempts((current) => ({ ...current, [currentSession.id]: true }));
-    setBusy("Importing ESPN field...");
+    setBusy("Importing Data Golf field...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
-      await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Auto-imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from ESPN.`);
+      const field = await fetchDataGolfFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
+      await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Auto-imported ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} from Data Golf.`);
     } catch (error) {
       console.error(error);
       setStatusMessage(error instanceof Error && error.message ? `Auto import failed: ${error.message}` : "Auto import failed. Use Setup to import the field manually.");
@@ -2519,7 +2602,7 @@ export default function Page() {
 
     if ((data ?? 0) > 0) {
       setStatusMessage(`Linked your account to ${matchingTeam.name}.`);
-      await loadSession(currentSession.id, false);
+      await loadSession(currentSession.id, false, false);
     }
   }
 
@@ -2538,7 +2621,7 @@ export default function Page() {
     setAutoFieldRefreshAttempts((current) => ({ ...current, [currentSession.id]: true }));
     setBusy("Refreshing field and odds...");
     try {
-      const field = await fetchEspnFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
+      const field = await fetchDataGolfFieldInput(currentSession.event_id, currentSession.event_tour, resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
       await saveFieldSnapshot(currentSession.id, field, currentSession.event_name, `Refreshed ${field.playerCount} golfers${field.oddsCount ? " with betting odds" : ""} before the draft started.`);
     } catch (error) {
       console.error(error);
@@ -2553,7 +2636,7 @@ export default function Page() {
     setBusy("Refreshing view...");
     try {
       await loadSessions();
-      await loadSession(sessionId, false);
+      await loadSession(sessionId, false, false);
       if (activeRoomTab === "results" && currentSession.event_id) {
         await loadTournamentLeaderboard(false);
       }
@@ -2572,9 +2655,13 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
-      const payload: EspnLeaderboardResponse = await response.json();
-      if (!payload.ok || !payload.leaderboard) throw new Error(payload.error);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let payload = await readJsonResponse<LeaderboardResponse>(response);
+      if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
+        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        payload = await readJsonResponse<LeaderboardResponse>(response);
+      }
+      if (!payload?.ok || !payload.leaderboard) throw new Error(payload?.error ?? "Data Golf did not return leaderboard data.");
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
@@ -2582,12 +2669,12 @@ export default function Page() {
         next_status: payload.finalized ? "finalized" : "scored",
       });
       if (error) throw error;
-      setStatusMessage(payload.finalized ? `Saved final leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.` : `Updated leaderboard results from ESPN for ${payload.eventName ?? currentSession.name}.`);
+      setStatusMessage(payload.finalized ? `Saved final leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.` : `Updated leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.`);
       await loadSessions();
-      await loadSession(currentSession.id, false);
+      await loadSession(currentSession.id, false, false);
     } catch (error) {
       console.error(error);
-      setStatusMessage("Could not update leaderboard results from ESPN.");
+      setStatusMessage("Could not update leaderboard results from Data Golf.");
     }
     setBusy("");
   }
@@ -2598,9 +2685,13 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      const response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
-      const payload: TournamentLeaderboardResponse = await response.json();
-      if (!payload.ok || !payload.rows) throw new Error(payload.error);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
+      if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
+        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
+      }
+      if (!payload?.ok || !payload.rows) throw new Error(payload?.error ?? "Data Golf did not return tournament leaderboard rows.");
       setTournamentLeaderboardRows(payload.rows);
     } catch (error) {
       console.error(error);
@@ -2773,13 +2864,13 @@ export default function Page() {
     if (insertResult.error) {
       console.error(insertResult.error);
       setBusy("");
-      await loadSession(currentSession.id, false);
+      await loadSession(currentSession.id, false, false);
       return setStatusMessage("Could not save that pick. Refresh if someone else drafted at the same time.");
     }
     const isLastPick = picks.length + 1 >= totalPicks;
     setStatusMessage(`${currentTeamOnClock.name} drafted ${playerName}.`);
     await loadSessions();
-    await loadSession(currentSession.id, false);
+    await loadSession(currentSession.id, false, false);
     if (isLastPick) {
       setActiveRoomTab("results");
     }
@@ -3008,7 +3099,7 @@ export default function Page() {
                           {selectedNewDraftEvent.location ? <div className="truncate">{selectedNewDraftEvent.location}</div> : null}
                         </div>
                         <div className="w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{selectedNewDraftEvent.dateLabel ?? "Date TBD"}</div>
-                        <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-[#617061]">Creating the room will import the ESPN field and available betting odds before the first pick.</div>
+                        <div className="rounded-xl bg-white/70 px-3 py-2 text-xs text-[#617061]">Creating the room will import the Data Golf field and available betting odds before the first pick.</div>
                       </div>
                     ) : null}
                     <label className="flex items-start gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm">
@@ -3445,22 +3536,27 @@ export default function Page() {
                         <div className="grid gap-3 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-4">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                              <h4 className="m-0 font-[Georgia] text-lg">Draft Summary</h4>
-                              <div className="mt-1 text-sm text-[#617061]">The playing teams and order were set when this room was created.</div>
+                              <h4 className="m-0 font-[Georgia] text-lg">Draft Order</h4>
+                              <div className="mt-1 text-sm text-[#617061]">{picks.length ? "Locked after the first pick." : "Move teams into the correct draft position before drafting starts."}</div>
                             </div>
                             <div className="flex items-center gap-2">
                               <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs font-semibold text-[#1a5c3a]">{assignedTeams.length} teams</span>
                               {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
+                              {picks.length ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs font-semibold text-[#6a5940]">Locked</span> : <span className="rounded-full bg-[#e0eee4] px-3 py-1 text-xs font-semibold text-[#1a5c3a]">Editable</span>}
                             </div>
                           </div>
                           {!assignedTeams.length ? (
                             <div className="rounded-xl bg-white/75 px-3 py-3 text-sm text-[#617061]">No teams were included in this draft.</div>
                           ) : (
-                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                              {assignedTeams.map((team) => (
-                                <div key={team.id} className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 rounded-xl border border-black/10 bg-white/90 px-3 py-2.5">
-                                  <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#1a5c3a] text-xs font-semibold text-white">{team.draft_slot}</span>
-                                  <strong className="truncate text-sm">{team.name}</strong>
+                            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                              {assignedTeams.map((team, index) => (
+                                <div key={team.id} className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-xl border border-black/10 bg-white/90 px-3 py-2.5">
+                                  <span className="grid h-8 w-8 place-items-center rounded-lg bg-[#1a5c3a] text-xs font-semibold text-white">{team.draft_slot}</span>
+                                  <strong className="min-w-0 truncate text-sm">{team.name}</strong>
+                                  <div className="flex gap-1">
+                                    <button className="grid h-8 w-8 place-items-center rounded-lg border border-[#1a5c3a]/20 bg-white text-sm font-semibold text-[#1a5c3a] disabled:opacity-35" disabled={!!picks.length || index === 0} onClick={() => moveDraftTeam(team.id, -1)} title="Move earlier">↑</button>
+                                    <button className="grid h-8 w-8 place-items-center rounded-lg border border-[#1a5c3a]/20 bg-white text-sm font-semibold text-[#1a5c3a] disabled:opacity-35" disabled={!!picks.length || index === assignedTeams.length - 1} onClick={() => moveDraftTeam(team.id, 1)} title="Move later">↓</button>
+                                  </div>
                                 </div>
                               ))}
                             </div>
@@ -3471,7 +3567,7 @@ export default function Page() {
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                               <h4 className="m-0 font-[Georgia] text-lg">Field & Odds</h4>
-                              <div className="mt-1 text-sm text-[#617061]">ESPN imports these automatically. Refresh only when the field or odds look incomplete.</div>
+                              <div className="mt-1 text-sm text-[#617061]">Data Golf imports these automatically. Refresh only when the field or odds look incomplete.</div>
                             </div>
                             <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">{allPlayers.length} golfers</span>
                           </div>
@@ -3482,7 +3578,7 @@ export default function Page() {
                             <div><span className="block text-xs">Field status</span><strong className="text-[#1f2a1d]">{picks.length || currentSession.field_locked_at ? "Locked" : "Editable"}</strong></div>
                           </div>
                           <div className="flex flex-wrap gap-3">
-                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2.5 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromEspn}>Refresh Field & Odds</button>
+                            <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2.5 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromDataGolf}>Refresh Field & Odds</button>
                             {currentSession.odds_source ? <a className="self-center text-sm text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">View odds source</a> : null}
                           </div>
                           <details className="rounded-xl border border-black/10 bg-[#f7f2e9]">

@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "copy:prod-to-dev": "node scripts/copy-prod-to-dev.js",
     "lint": "eslint"
   },
   "dependencies": {
