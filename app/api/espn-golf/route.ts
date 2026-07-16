@@ -2,7 +2,22 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
-export const fetchCache = "force-no-store";
+
+const RESPONSE_CACHE_SECONDS: Record<string, number> = {
+  events: 60 * 60,
+  field: 6 * 60 * 60,
+  leaderboard: 60,
+  odds: 6 * 60 * 60,
+};
+
+function cachedJson(body: unknown, action: string | null, init?: ResponseInit) {
+  const ttl = action ? RESPONSE_CACHE_SECONDS[action] : 0;
+  const headers = new Headers(init?.headers);
+  if (ttl && !headers.has("Cache-Control")) {
+    headers.set("Cache-Control", `public, s-maxage=${ttl}, stale-while-revalidate=${Math.max(ttl, 60)}`);
+  }
+  return NextResponse.json(body, { ...init, headers });
+}
 
 type EspnCompetitor = {
   athlete?: {
@@ -983,11 +998,11 @@ export async function GET(req: NextRequest) {
       const scoreboardJson = await fetchJson(scoreboardUrl);
       const scheduleHtml = await fetchText(`https://www.espn.com/golf/schedule/_/tour/${tour.scheduleSlug}/season/${season}`);
       const events = mergeEvents(extractEventsFromScoreboard(scoreboardJson, season), extractEventsFromScheduleHtml(scheduleHtml, season));
-      return NextResponse.json({
+      return cachedJson({
         ok: true,
         tour: tour.label,
         events,
-      });
+      }, action);
     }
 
     if (action === "odds") {
@@ -1010,12 +1025,12 @@ export async function GET(req: NextRequest) {
       const oddsEntries = parseOddsFromArticle(articleHtml);
       const odds = Object.fromEntries(oddsEntries.entries());
 
-      return NextResponse.json({
+      return cachedJson({
         ok: true,
         eventName: eventNameParam.trim(),
         odds,
         source: articleUrl,
-      });
+      }, action);
     }
 
     const { scoreboardUrl, event, competitors, tour } = await fetchScoreboardForEvent(eventId, req.nextUrl.searchParams.get("tour"), season);
@@ -1035,32 +1050,32 @@ export async function GET(req: NextRequest) {
       const players = page ? extractPlayerFieldFromLeaderboardHtml(page.html) : [];
 
       if (players.length) {
-        return NextResponse.json({
+        return cachedJson({
           ok: true,
           eventName,
           players,
           source: page?.url,
-        });
+        }, action);
       }
 
       const usgaField = await fetchUsgaFieldForEvent(eventName, eventId);
       if (usgaField?.players.length) {
-        return NextResponse.json({
+        return cachedJson({
           ok: true,
           eventName,
           players: usgaField.players,
           source: usgaField.source,
-        });
+        }, action);
       }
 
       const travelersField = await fetchTravelersFieldForEvent(eventName, eventId);
       if (travelersField?.players.length) {
-        return NextResponse.json({
+        return cachedJson({
           ok: true,
           eventName,
           players: travelersField.players,
           source: travelersField.source,
-        });
+        }, action);
       }
     }
 
@@ -1079,24 +1094,24 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      return NextResponse.json({
+      return cachedJson({
         ok: true,
         eventName,
         players: scoreboardPlayers,
         source: scoreboardUrl,
-      });
+      }, action);
     }
 
       if (action === "leaderboard") {
         const liveLeaderboard = buildLeaderboard(competitors, eventIsCompleted(event));
-        return NextResponse.json({
+        return cachedJson({
           ok: true,
           eventName,
           leaderboard: liveLeaderboard.positions,
           totals: liveLeaderboard.totals,
           rows: liveLeaderboard.rows,
           source: scoreboardUrl,
-        });
+        }, action);
       }
 
     return NextResponse.json({

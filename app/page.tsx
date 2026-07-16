@@ -90,7 +90,7 @@ const TOUR_OPTIONS = [
   { id: "champions", label: "PGA TOUR Champions" },
   { id: "liv", label: "LIV Golf" },
 ];
-const LIVE_DATA_FETCH_OPTIONS: RequestInit = { cache: "no-store" };
+const LIVE_DATA_FETCH_OPTIONS: RequestInit = {};
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",
@@ -1152,7 +1152,7 @@ export default function Page() {
       claimed_team_name: nextProfile?.team_name ?? null,
     });
     if (defaultLeagueResult.error) {
-      console.error(defaultLeagueResult.error);
+      console.warn("Could not ensure default league membership.", defaultLeagueResult.error);
     }
 
     await joinPendingLeagueInvite(nextProfile);
