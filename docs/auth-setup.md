@@ -7,10 +7,19 @@ Rat Race Golf uses Supabase Auth for email/password, password reset, and social 
 The app sends reset links back to:
 
 ```text
-https://rat-race-golf.vercel.app/?type=recovery
+https://www.ratracegolf.com/?type=recovery
 ```
 
 In Supabase, confirm that the production site URL and redirect URL are allowed:
+
+```text
+https://www.ratracegolf.com
+https://www.ratracegolf.com/**
+https://ratracegolf.com
+https://ratracegolf.com/**
+```
+
+Keep the Vercel URL as an allowed fallback redirect while the domain migration is fresh:
 
 ```text
 https://rat-race-golf.vercel.app
@@ -30,7 +39,7 @@ Each provider also needs to be enabled in Supabase under Authentication > Provid
 Use the production URL as the allowed redirect URL:
 
 ```text
-https://rat-race-golf.vercel.app/**
+https://www.ratracegolf.com/**
 ```
 
 ## Automatic Leaderboard Refresh

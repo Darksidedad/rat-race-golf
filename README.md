@@ -1,11 +1,11 @@
-﻿## PGA Draft Room
+## Rat Race Golf
 
 This app is a live fantasy golf draft room for weekly PGA tournaments. It lets your league:
 
 - create a tournament session for each event
 - let only the teams playing that week join the draft
 - assign the snake draft order
-- import the PGA field from ESPN
+- import tournament fields, odds, and scoring from Data Golf
 - draft unique golfers live with Supabase sync
 - score teams using only the best 3 of 4 golfers
 
@@ -41,10 +41,10 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 5. Review the 12 team names and edit any names you want.
 6. Uncheck teams that are sitting out that week.
 7. Click `Assign Next Pick` until every active team has a draft slot.
-8. Click `Import ESPN Field` to load that week’s golfers.
+8. Click `Refresh Field & Odds` to load that week's golfers from Data Golf.
 9. Click `Save Player Pool`.
 10. Start drafting players from the available golfer list.
-11. After the tournament starts, click `Pull ESPN Leaderboard` to update scores.
+11. After the tournament starts, click `Refresh Leaderboard` to update scores.
 12. If needed, paste manual overrides into the scoring box and click `Apply Manual Scores`.
 
 ## Important Note
