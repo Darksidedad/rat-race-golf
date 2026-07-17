@@ -193,6 +193,13 @@ function scoreLabel(value: string | number | null | undefined) {
   return String(value);
 }
 
+function scoreNumber(value: string | null | undefined) {
+  if (!value) return Number.POSITIVE_INFINITY;
+  if (value.toUpperCase() === "E") return 0;
+  const parsed = Number(value.replace("+", ""));
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
 function thruLabel(row: DataGolfPredictionPlayer) {
   const thru = Number(row.thru);
   const endHole = Number(row.end_hole);
@@ -330,7 +337,18 @@ async function appLeaderboard(request: NextRequest) {
       total,
       thru,
     };
-  }).filter((row) => row.name);
+  }).filter((row) => row.name)
+    .sort((a, b) => {
+      const aPosition = a.position ?? Number.POSITIVE_INFINITY;
+      const bPosition = b.position ?? Number.POSITIVE_INFINITY;
+      if (aPosition !== bPosition) return aPosition - bPosition;
+
+      const aScore = scoreNumber(a.total);
+      const bScore = scoreNumber(b.total);
+      if (aScore !== bScore) return aScore - bScore;
+
+      return a.name.localeCompare(b.name);
+    });
 
   const round = Number(raw.data?.info?.current_round);
   const finalized = Number.isFinite(round) && round >= 4 && rows.length > 0 && rows.every((row) => row.thru === "F");
