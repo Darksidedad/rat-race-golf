@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
 
 const DATA_GOLF_BASE_URL = "https://feeds.datagolf.com";
 
@@ -108,6 +109,11 @@ type DataGolfFieldPlayer = {
   teetimes?: Array<{ round_num?: number | string | null; teetime?: string | null; start_hole?: number | string | null; wave?: string | null }>;
 };
 
+type DataGolfHistoricalResult = {
+  fin_text?: string | number | null;
+  player_name?: string | null;
+};
+
 type DataGolfPredictionPlayer = {
   current_pos?: string | null;
   current_score?: number | string | null;
@@ -137,6 +143,87 @@ type DataGolfProxyPayload<T> = {
   data?: T;
   error?: string;
 };
+
+type SharedTournamentSnapshot = {
+  tournament_id: string;
+  player_field: string[];
+  odds: Record<string, number>;
+  leaderboard: Record<string, number | null>;
+  totals: Record<string, string | null>;
+  leaderboard_rows: Array<{ name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null }>;
+  finalized: boolean;
+  field_source: string | null;
+  results_source: string | null;
+  field_refreshed_at: string | null;
+  results_refreshed_at: string | null;
+};
+
+function catalogClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+
+function catalogProviderEventId(eventId: string, tour: string, season: number | string) {
+  return eventId.startsWith("dg:") ? eventId : formatDataGolfEventId(tour, season, eventId);
+}
+
+async function ensureCatalogTournament(input: {
+  providerEventId: string;
+  tour: string;
+  season: number;
+  name: string;
+  startDate?: string | null;
+  course?: string | null;
+  location?: string | null;
+}) {
+  const supabase = catalogClient();
+  if (!supabase) return null;
+  const { data, error } = await supabase.from("tournament_catalog").upsert({
+    provider: "data-golf",
+    provider_event_id: input.providerEventId,
+    tour: input.tour,
+    season: input.season,
+    name: input.name,
+    start_date: input.startDate ?? null,
+    course: input.course ?? null,
+    location: input.location ?? null,
+  }, { onConflict: "provider,provider_event_id" }).select("id").single();
+  if (error) {
+    console.error("Tournament catalog upsert failed", error);
+    return null;
+  }
+  return data.id as string;
+}
+
+async function loadSharedSnapshot(providerEventId: string) {
+  const supabase = catalogClient();
+  if (!supabase) return null;
+  const { data, error } = await supabase
+    .from("tournament_catalog")
+    .select("id,tournament_snapshots(*)")
+    .eq("provider", "data-golf")
+    .eq("provider_event_id", providerEventId)
+    .maybeSingle();
+  if (error) {
+    console.error("Tournament snapshot lookup failed", error);
+    return null;
+  }
+  const snapshot = Array.isArray(data?.tournament_snapshots) ? data?.tournament_snapshots[0] : data?.tournament_snapshots;
+  return snapshot as SharedTournamentSnapshot | null;
+}
+
+async function saveSharedSnapshot(tournamentId: string | null, values: Partial<SharedTournamentSnapshot>) {
+  const supabase = catalogClient();
+  if (!supabase || !tournamentId) return;
+  const { error } = await supabase.from("tournament_snapshots").upsert({ tournament_id: tournamentId, ...values }, { onConflict: "tournament_id" });
+  if (error) console.error("Tournament snapshot save failed", error);
+  if (values.finalized) {
+    const { error: statusError } = await supabase.from("tournament_catalog").update({ status: "completed" }).eq("id", tournamentId);
+    if (statusError) console.error("Tournament catalog status update failed", statusError);
+  }
+}
 
 function dataGolfKey() {
   return process.env.DATA_GOLF_API_KEY ?? process.env.DATAGOLF_API_KEY ?? "";
@@ -172,6 +259,32 @@ function parseDataGolfEventId(value: string | null | undefined) {
 
 function formatDataGolfEventId(tour: string, season: number | string, eventId: number | string | null | undefined) {
   return `dg:${normalizeTour(tour)}:${season}:${eventId}`;
+}
+
+function normalizedEventName(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\bpresented by\b.*$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function eventNamesMatch(expected: string | null | undefined, actual: string | null | undefined) {
+  const left = normalizedEventName(expected);
+  const right = normalizedEventName(actual);
+  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+}
+
+async function fetchHistoricalEvent(request: NextRequest, eventId: string) {
+  const historicalUrl = new URL(request.url);
+  historicalUrl.searchParams.set("action", "historical-event-results");
+  historicalUrl.searchParams.set("event_id", eventId);
+  historicalUrl.searchParams.set("year", request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear()));
+  return fetchDataGolf<{
+    event_id?: number | string;
+    event_name?: string;
+    event_stats?: DataGolfHistoricalResult[];
+  }>(new NextRequest(historicalUrl), "historical-event-results");
 }
 
 function parseAmericanOdds(value: string | number | null | undefined) {
@@ -242,7 +355,7 @@ async function appEvents(request: NextRequest) {
   const tour = normalizeTour(request.nextUrl.searchParams.get("tour"));
   const season = request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear());
   const raw = await fetchDataGolf<{ schedule?: DataGolfScheduleEvent[] }>(request, "schedule");
-  const events = (raw.data?.schedule ?? [])
+  const eventRows = (raw.data?.schedule ?? [])
     .filter((event) => event.event_id !== null && event.event_id !== undefined && event.event_name)
     .filter((event) => !event.tour || normalizeTour(event.tour) === tour)
     .map((event) => ({
@@ -254,6 +367,18 @@ async function appEvents(request: NextRequest) {
       location: event.location ?? undefined,
       course: event.course ?? undefined,
     }));
+  const events = await Promise.all(eventRows.map(async (event) => ({
+    ...event,
+    catalogId: await ensureCatalogTournament({
+      providerEventId: event.id,
+      tour,
+      season: Number(season),
+      name: event.name,
+      startDate: event.startDate,
+      course: event.course,
+      location: event.location,
+    }),
+  })));
 
   return cachedJson({ ok: true, tour, events }, ENDPOINTS.schedule.cacheSeconds);
 }
@@ -278,13 +403,63 @@ async function appOdds(request: NextRequest) {
 
 async function appField(request: NextRequest) {
   const eventId = parseDataGolfEventId(request.nextUrl.searchParams.get("eventId"));
+  const tour = normalizeTour(request.nextUrl.searchParams.get("tour"));
+  const season = Number(request.nextUrl.searchParams.get("season") ?? new Date().getFullYear());
+  const providerEventId = catalogProviderEventId(String(request.nextUrl.searchParams.get("eventId") ?? eventId), tour, season);
+  const sharedSnapshot = await loadSharedSnapshot(providerEventId);
+  const fieldRefreshedAt = sharedSnapshot?.field_refreshed_at ? new Date(sharedSnapshot.field_refreshed_at).getTime() : 0;
+  if (sharedSnapshot?.player_field?.length && Date.now() - fieldRefreshedAt < 6 * 60 * 60 * 1000) {
+    return cachedJson({
+      ok: true,
+      eventName: undefined,
+      players: sharedSnapshot.player_field,
+      odds: sharedSnapshot.odds ?? {},
+      oddsSource: sharedSnapshot.field_source ?? "shared tournament snapshot",
+      source: sharedSnapshot.field_source ?? "shared tournament snapshot",
+      lastUpdated: sharedSnapshot.field_refreshed_at,
+      cached: true,
+    }, ENDPOINTS.field.cacheSeconds);
+  }
   const raw = await fetchDataGolf<{ event_id?: number | string; event_name?: string; field?: DataGolfFieldPlayer[]; last_updated?: string }>(request, "field");
   const currentEventId = String(raw.data?.event_id ?? "");
 
   if (eventId && currentEventId && eventId !== currentEventId) {
+    try {
+      const historical = await fetchHistoricalEvent(request, eventId);
+      const historicalEventId = String(historical.data?.event_id ?? "");
+      const players = (historical.data?.event_stats ?? [])
+        .map((player) => formatDataGolfPlayerName(player.player_name))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+
+      if (historicalEventId === eventId && players.length) {
+        const tournamentId = await ensureCatalogTournament({
+          providerEventId,
+          tour,
+          season,
+          name: historical.data?.event_name ?? providerEventId,
+        });
+        await saveSharedSnapshot(tournamentId, {
+          player_field: players,
+          field_source: historical.source ?? null,
+          field_refreshed_at: new Date().toISOString(),
+        });
+        return cachedJson({
+          ok: true,
+          eventName: historical.data?.event_name,
+          players,
+          odds: {},
+          oddsSource: "",
+          source: historical.source,
+        }, ENDPOINTS["historical-event-results"].cacheSeconds);
+      }
+    } catch (error) {
+      console.error("Historical field fallback failed", error);
+    }
+
     return NextResponse.json({
       ok: false,
-      error: `Data Golf field updates are currently for ${raw.data?.event_name ?? "the active event"} only.`,
+      error: `Data Golf field updates are currently for ${raw.data?.event_name ?? "the active event"} only, and no completed historical field was available.`,
       activeEventId: currentEventId,
     }, { status: 409 });
   }
@@ -306,6 +481,19 @@ async function appField(request: NextRequest) {
     odds = {};
   }
 
+  const tournamentId = await ensureCatalogTournament({
+    providerEventId,
+    tour,
+    season,
+    name: raw.data?.event_name ?? providerEventId,
+  });
+  await saveSharedSnapshot(tournamentId, {
+    player_field: players,
+    odds,
+    field_source: raw.source ?? null,
+    field_refreshed_at: new Date().toISOString(),
+  });
+
   return cachedJson({
     ok: true,
     eventName: raw.data?.event_name,
@@ -318,7 +506,119 @@ async function appField(request: NextRequest) {
 }
 
 async function appLeaderboard(request: NextRequest) {
-  const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
+  const requestedEventId = parseDataGolfEventId(request.nextUrl.searchParams.get("eventId"));
+  const expectedEventName = request.nextUrl.searchParams.get("eventName");
+  const tour = normalizeTour(request.nextUrl.searchParams.get("tour"));
+  const season = Number(request.nextUrl.searchParams.get("season") ?? new Date().getFullYear());
+  const providerEventId = catalogProviderEventId(String(request.nextUrl.searchParams.get("eventId") ?? requestedEventId), tour, season);
+  const tournamentId = expectedEventName ? await ensureCatalogTournament({ providerEventId, tour, season, name: expectedEventName }) : null;
+  const sharedSnapshot = await loadSharedSnapshot(providerEventId);
+  const resultsRefreshedAt = sharedSnapshot?.results_refreshed_at ? new Date(sharedSnapshot.results_refreshed_at).getTime() : 0;
+  if (sharedSnapshot?.leaderboard_rows?.length && (sharedSnapshot.finalized || Date.now() - resultsRefreshedAt < 5 * 60 * 1000)) {
+    return cachedJson({
+      ok: true,
+      eventName: expectedEventName,
+      leaderboard: sharedSnapshot.leaderboard,
+      totals: sharedSnapshot.totals,
+      rows: sharedSnapshot.leaderboard_rows,
+      finalized: sharedSnapshot.finalized,
+      source: sharedSnapshot.results_source ?? "shared tournament snapshot",
+      cached: true,
+    }, sharedSnapshot.finalized ? ENDPOINTS["historical-event-results"].cacheSeconds : ENDPOINTS["live-predictions"].cacheSeconds);
+  }
+  const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_id?: number | string; event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
+  const activeEventId = String(raw.data?.info?.event_id ?? "").trim();
+
+  if (requestedEventId && activeEventId && requestedEventId !== activeEventId) {
+    return NextResponse.json({
+      ok: false,
+      error: `Data Golf leaderboard updates are currently for ${raw.data?.info?.event_name ?? "the active event"} only.`,
+      activeEventId,
+      eventName: raw.data?.info?.event_name,
+    }, { status: 409 });
+  }
+
+  if (expectedEventName && !eventNamesMatch(expectedEventName, raw.data?.info?.event_name)) {
+    try {
+      const season = request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear());
+      const eventsResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=events&season=${encodeURIComponent(season)}`, { cache: "no-store" });
+      const eventsPayload = await eventsResponse.json() as { ok?: boolean; events?: Array<{ id?: string; name?: string }> };
+      const matchingEvent = eventsPayload.events?.find((event) => event.id && eventNamesMatch(expectedEventName, event.name));
+      if (eventsPayload.ok && matchingEvent?.id) {
+        const leaderboardResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(matchingEvent.id)}&season=${encodeURIComponent(season)}`, { cache: "no-store" });
+        const leaderboardPayload = await leaderboardResponse.json() as {
+          ok?: boolean;
+          eventName?: string;
+          leaderboard?: Record<string, number | null>;
+          totals?: Record<string, string | null>;
+          rows?: Array<{ name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null }>;
+          finalized?: boolean;
+          source?: string;
+        };
+        if (leaderboardPayload.ok && eventNamesMatch(expectedEventName, leaderboardPayload.eventName) && leaderboardPayload.rows?.length) {
+          await saveSharedSnapshot(tournamentId, {
+            leaderboard: leaderboardPayload.leaderboard ?? {},
+            totals: leaderboardPayload.totals ?? {},
+            leaderboard_rows: leaderboardPayload.rows,
+            finalized: true,
+            results_source: leaderboardPayload.source ?? "ESPN historical leaderboard",
+            results_refreshed_at: new Date().toISOString(),
+          });
+          return cachedJson({ ...leaderboardPayload, finalized: true }, ENDPOINTS["historical-event-results"].cacheSeconds);
+        }
+      }
+    } catch (error) {
+      console.error("ESPN historical leaderboard fallback failed", error);
+    }
+
+    try {
+      const historical = await fetchHistoricalEvent(request, requestedEventId);
+      const historicalEventId = String(historical.data?.event_id ?? "");
+      const rows = (historical.data?.event_stats ?? []).map((player) => {
+        const name = formatDataGolfPlayerName(player.player_name);
+        const finish = String(player.fin_text ?? "").trim().toUpperCase();
+        const position = positionNumber(finish);
+        const status = ["CUT", "WD", "DQ"].includes(finish) ? finish : null;
+        return {
+          name,
+          position,
+          positionLabel: finish,
+          total: status,
+          thru: status ?? (position ? "F" : null),
+        };
+      }).filter((row) => row.name);
+
+      if (historicalEventId === requestedEventId && rows.length) {
+        const historicalLeaderboard = Object.fromEntries(rows.map((row) => [row.name, row.position]));
+        const historicalTotals = Object.fromEntries(rows.map((row) => [row.name, `${row.total ?? ""}||${row.thru ?? ""}`]));
+        await saveSharedSnapshot(tournamentId, {
+          leaderboard: historicalLeaderboard,
+          totals: historicalTotals,
+          leaderboard_rows: rows,
+          finalized: true,
+          results_source: historical.source ?? null,
+          results_refreshed_at: new Date().toISOString(),
+        });
+        return cachedJson({
+          ok: true,
+          eventName: historical.data?.event_name,
+          leaderboard: historicalLeaderboard,
+          totals: historicalTotals,
+          rows,
+          finalized: true,
+          source: historical.source,
+        }, ENDPOINTS["historical-event-results"].cacheSeconds);
+      }
+    } catch (error) {
+      console.error("Historical leaderboard fallback failed", error);
+    }
+
+    return NextResponse.json({
+      ok: false,
+      error: `Leaderboard event mismatch: expected ${expectedEventName}, received ${raw.data?.info?.event_name ?? "an unidentified event"}.`,
+      eventName: raw.data?.info?.event_name,
+    }, { status: 409 });
+  }
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
   const rows = (raw.data?.data ?? []).map((row) => {
@@ -352,6 +652,15 @@ async function appLeaderboard(request: NextRequest) {
 
   const round = Number(raw.data?.info?.current_round);
   const finalized = Number.isFinite(round) && round >= 4 && rows.length > 0 && rows.every((row) => row.thru === "F");
+
+  await saveSharedSnapshot(tournamentId, {
+    leaderboard,
+    totals,
+    leaderboard_rows: rows,
+    finalized,
+    results_source: raw.source ?? null,
+    results_refreshed_at: new Date().toISOString(),
+  });
 
   return cachedJson({
     ok: true,

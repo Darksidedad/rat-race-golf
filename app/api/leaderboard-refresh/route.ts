@@ -71,6 +71,20 @@ function totalsHavePlayersOnCourse(totals: Record<string, string | null> | null 
   return Object.values(totals ?? {}).some((value) => isLiveThru(storedThruFromTotal(value)));
 }
 
+function normalizedEventName(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\bpresented by\b.*$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function eventNamesMatch(expected: string | null | undefined, actual: string | null | undefined) {
+  const left = normalizedEventName(expected);
+  const right = normalizedEventName(actual);
+  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+}
+
 function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number) {
   const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
   return !Number.isFinite(updatedAt) || !updatedAt || now - updatedAt >= OFF_HOURS_REFRESH_MS;
@@ -79,13 +93,15 @@ function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number)
 async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh) {
   if (!session.event_id) throw new Error("Missing event id");
   const params = new URLSearchParams({
-    action: "leaderboard",
+    action: session.event_id.startsWith("dg:") ? "app-leaderboard" : "leaderboard",
     eventId: session.event_id,
     season: String(session.event_season ?? new Date().getFullYear()),
   });
   if (session.event_tour) params.set("tour", session.event_tour);
+  if (session.event_name && session.event_id.startsWith("dg:")) params.set("eventName", session.event_name);
 
-  const response = await fetch(`${origin}/api/espn-golf?${params.toString()}`, { cache: "no-store" });
+  const route = session.event_id.startsWith("dg:") ? "data-golf" : "espn-golf";
+  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store" });
   const payload = (await response.json()) as EspnLeaderboardResponse;
   if (!payload.ok || !payload.leaderboard) {
     throw new Error(payload.error || "Leaderboard response did not include scoring data.");
@@ -132,6 +148,9 @@ export async function GET(request: NextRequest) {
 
     try {
       const payload = await fetchLeaderboard(request.nextUrl.origin, session);
+      if (!eventNamesMatch(session.event_name, payload.eventName)) {
+        throw new Error(`Leaderboard event mismatch: expected ${session.event_name ?? "the selected event"}, received ${payload.eventName ?? "an unidentified event"}.`);
+      }
       const hasPlayersOnCourse = rowsHavePlayersOnCourse(payload.rows);
       const hasNoSavedScores = Object.keys(session.current_positions ?? {}).length === 0;
 

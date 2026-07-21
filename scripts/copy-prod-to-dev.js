@@ -88,14 +88,12 @@ async function main() {
     .upsert({
       id: devUser.id,
       username: devUser.user_metadata?.username || devUser.email?.split("@")[0] || "Dev Commissioner",
-      team_name: devUser.user_metadata?.team_name || "Dev Team",
       role: "commissioner",
       site_role: "site_admin",
     }, { onConflict: "id" })
     .select("*")
     .single();
   if (devProfileResult.error) throw new Error(`Could not upsert dev profile: ${devProfileResult.error.message}`);
-  const devProfile = devProfileResult.data;
 
   const leagues = prodLeagues.map((league, index) => ({
     ...league,
@@ -113,7 +111,6 @@ async function main() {
     league_id: league.id,
     user_id: devUser.id,
     role: "commissioner",
-    claimed_team_name: devProfile.team_name,
   }));
   await insertRows(dev, "league_memberships", memberships);
 
@@ -123,10 +120,9 @@ async function main() {
   }));
   await insertRows(dev, "draft_sessions", sessions);
 
-  const normalizedDevTeam = String(devProfile.team_name ?? "").trim().toLowerCase();
   const teams = prodTeams.map((team) => ({
     ...team,
-    owner_user_id: normalizedDevTeam && String(team.name ?? "").trim().toLowerCase() === normalizedDevTeam ? devUser.id : null,
+    owner_user_id: null,
   }));
   await insertRows(dev, "draft_teams", teams);
   await insertRows(dev, "draft_picks", prodPicks);

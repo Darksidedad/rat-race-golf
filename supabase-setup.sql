@@ -27,6 +27,50 @@ create table if not exists public.league_memberships (
   created_at timestamptz not null default now(),
   constraint league_memberships_unique unique (league_id, user_id)
 );
+
+create table if not exists public.league_invitations (
+  id uuid primary key default gen_random_uuid(),
+  league_id uuid not null references public.leagues(id) on delete cascade,
+  token_hash bytea not null unique,
+  created_by uuid not null references public.profiles(id) on delete cascade,
+  expires_at timestamptz not null,
+  max_uses integer not null default 25 check (max_uses between 1 and 500),
+  use_count integer not null default 0 check (use_count >= 0),
+  revoked_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.tournament_catalog (
+  id uuid primary key default gen_random_uuid(),
+  tour text not null,
+  season integer not null,
+  provider text not null,
+  provider_event_id text not null,
+  name text not null,
+  start_date timestamptz,
+  course text,
+  location text,
+  status text not null default 'scheduled' check (status in ('scheduled', 'active', 'completed', 'cancelled')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint tournament_catalog_provider_event_unique unique (provider, provider_event_id)
+);
+
+create table if not exists public.tournament_snapshots (
+  tournament_id uuid primary key references public.tournament_catalog(id) on delete cascade,
+  player_field jsonb not null default '[]'::jsonb,
+  odds jsonb not null default '{}'::jsonb,
+  leaderboard jsonb not null default '{}'::jsonb,
+  totals jsonb not null default '{}'::jsonb,
+  leaderboard_rows jsonb not null default '[]'::jsonb,
+  finalized boolean not null default false,
+  field_source text,
+  results_source text,
+  field_refreshed_at timestamptz,
+  results_refreshed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.draft_sessions (
   id uuid primary key default gen_random_uuid(),
   event_tour text not null default 'pga',
@@ -94,15 +138,10 @@ alter table public.draft_sessions add column if not exists odds_snapshot jsonb n
 alter table public.draft_sessions add column if not exists odds_source text;
 alter table public.draft_sessions add column if not exists odds_refreshed_at timestamptz;
 alter table public.draft_sessions add column if not exists field_locked_at timestamptz;
+alter table public.draft_sessions add column if not exists tournament_id uuid references public.tournament_catalog(id) on delete set null;
 alter table public.profiles drop constraint if exists profiles_active_league_fkey;
 alter table public.profiles add constraint profiles_active_league_fkey foreign key (active_league_id) references public.leagues(id) on delete set null;
 alter table public.draft_teams add column if not exists owner_user_id uuid references public.profiles(id) on delete set null;
-
-update public.draft_teams
-set owner_user_id = profiles.id
-from public.profiles
-where public.draft_teams.owner_user_id is null
-  and lower(regexp_replace(public.draft_teams.name, '[^a-z0-9]+', '', 'gi')) = lower(regexp_replace(public.profiles.team_name, '[^a-z0-9]+', '', 'gi'));
 
 update public.draft_sessions
 set commissioner_id = profiles.id
@@ -110,7 +149,7 @@ from public.profiles
 where public.draft_sessions.commissioner_id is null
   and public.profiles.role = 'commissioner';
 
-create index if not exists profiles_team_name_idx on public.profiles(team_name);
+drop index if exists public.profiles_team_name_idx;
 
 insert into public.leagues (name, slug, created_by)
 values (
@@ -131,23 +170,18 @@ update public.draft_sessions
 set league_id = (select id from public.leagues where slug = 'rat-race-golf')
 where league_id is null;
 
-insert into public.league_memberships (league_id, user_id, role, claimed_team_name)
-select (select id from public.leagues where slug = 'rat-race-golf'), id, role, team_name
-from public.profiles
-where exists (select 1 from public.leagues where slug = 'rat-race-golf')
-on conflict (league_id, user_id) do update
-  set role = excluded.role,
-      claimed_team_name = excluded.claimed_team_name;
+-- Team identity belongs to draft teams. These legacy account-level fields are
+-- retained temporarily for migration compatibility but are no longer used.
+update public.profiles set team_name = null where team_name is not null;
+update public.league_memberships set claimed_team_name = null where claimed_team_name is not null;
 
-update public.profiles
-set active_league_id = (select id from public.leagues where slug = 'rat-race-golf')
-where active_league_id is null
-  and exists (select 1 from public.leagues where slug = 'rat-race-golf');
 create index if not exists draft_sessions_commissioner_idx on public.draft_sessions(commissioner_id);
 create index if not exists profiles_active_league_idx on public.profiles(active_league_id);
 create index if not exists draft_sessions_league_idx on public.draft_sessions(league_id);
 create index if not exists league_memberships_league_idx on public.league_memberships(league_id);
 create index if not exists league_memberships_user_idx on public.league_memberships(user_id);
+create index if not exists league_invitations_league_idx on public.league_invitations(league_id);
+create index if not exists league_invitations_active_idx on public.league_invitations(league_id, expires_at) where revoked_at is null;
 create index if not exists draft_teams_session_idx on public.draft_teams(session_id);
 create index if not exists draft_teams_owner_idx on public.draft_teams(owner_user_id);
 create index if not exists draft_picks_session_idx on public.draft_picks(session_id);
@@ -323,7 +357,7 @@ begin
 end;
 $$;
 
-create or replace function public.create_league_for_site_admin(
+create or replace function public.create_league(
   target_name text,
   target_slug text default null,
   commissioner_claimed_team_name text default null
@@ -368,11 +402,10 @@ begin
   values (normalized_name, normalized_slug, auth.uid())
   returning id into created_league_id;
 
-  insert into public.league_memberships (league_id, user_id, role, claimed_team_name)
-  values (created_league_id, auth.uid(), 'commissioner', nullif(trim(coalesce(commissioner_claimed_team_name, '')), ''))
+  insert into public.league_memberships (league_id, user_id, role)
+  values (created_league_id, auth.uid(), 'commissioner')
   on conflict (league_id, user_id) do update
-    set role = 'commissioner',
-        claimed_team_name = excluded.claimed_team_name;
+    set role = 'commissioner';
 
   update public.profiles
   set active_league_id = created_league_id
@@ -382,6 +415,29 @@ begin
 end;
 $$;
 
+revoke execute on function public.create_league(text, text, text) from public;
+grant execute on function public.create_league(text, text, text) to authenticated;
+
+create or replace function public.create_league_for_site_admin(
+  target_name text,
+  target_slug text default null,
+  commissioner_claimed_team_name text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_site_admin() then
+    raise exception 'Site admin access required';
+  end if;
+
+  return public.create_league(target_name, target_slug, commissioner_claimed_team_name);
+end;
+$$;
+
+revoke execute on function public.create_league_for_site_admin(text, text, text) from public;
 grant execute on function public.create_league_for_site_admin(text, text, text) to authenticated;
 
 create or replace function public.join_league_by_slug(target_slug text, claimed_team_name text default null)
@@ -392,7 +448,6 @@ set search_path = public
 as $$
 declare
   target_league_id uuid;
-  next_claimed_team_name text;
 begin
   if auth.uid() is null then
     raise exception 'Authentication required';
@@ -408,12 +463,9 @@ begin
     raise exception 'That league invite is not valid';
   end if;
 
-  next_claimed_team_name := nullif(trim(coalesce(claimed_team_name, (select team_name from public.profiles where id = auth.uid()), '')), '');
-
-  insert into public.league_memberships (league_id, user_id, role, claimed_team_name)
-  values (target_league_id, auth.uid(), 'member', next_claimed_team_name)
-  on conflict (league_id, user_id) do update
-    set claimed_team_name = coalesce(public.league_memberships.claimed_team_name, excluded.claimed_team_name);
+  insert into public.league_memberships (league_id, user_id, role)
+  values (target_league_id, auth.uid(), 'member')
+  on conflict (league_id, user_id) do nothing;
 
   update public.profiles
   set active_league_id = target_league_id
@@ -424,6 +476,122 @@ end;
 $$;
 
 grant execute on function public.join_league_by_slug(text, text) to authenticated;
+
+create or replace function public.create_league_invitation(
+  target_league_id uuid,
+  expires_in_days integer default 14,
+  target_max_uses integer default 25
+)
+returns text
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  invitation_token text;
+  normalized_days integer;
+  normalized_max_uses integer;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  if not public.is_league_admin(target_league_id) then
+    raise exception 'League admin access required';
+  end if;
+
+  normalized_days := least(greatest(coalesce(expires_in_days, 14), 1), 90);
+  normalized_max_uses := least(greatest(coalesce(target_max_uses, 25), 1), 500);
+  invitation_token := encode(gen_random_bytes(24), 'hex');
+
+  update public.league_invitations
+  set revoked_at = now()
+  where league_id = target_league_id
+    and revoked_at is null
+    and expires_at > now()
+    and use_count < max_uses;
+
+  insert into public.league_invitations (
+    league_id,
+    token_hash,
+    created_by,
+    expires_at,
+    max_uses
+  )
+  values (
+    target_league_id,
+    digest(invitation_token, 'sha256'),
+    auth.uid(),
+    now() + make_interval(days => normalized_days),
+    normalized_max_uses
+  );
+
+  return invitation_token;
+end;
+$$;
+
+revoke execute on function public.create_league_invitation(uuid, integer, integer) from public;
+grant execute on function public.create_league_invitation(uuid, integer, integer) to authenticated;
+
+create or replace function public.accept_league_invitation(
+  invitation_token text,
+  claimed_team_name text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  target_invitation public.league_invitations%rowtype;
+  membership_was_new boolean;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+
+  select *
+  into target_invitation
+  from public.league_invitations
+  where token_hash = digest(trim(coalesce(invitation_token, '')), 'sha256')
+  for update;
+
+  if target_invitation.id is null
+    or target_invitation.revoked_at is not null
+    or target_invitation.expires_at <= now()
+    or target_invitation.use_count >= target_invitation.max_uses then
+    raise exception 'That league invitation is invalid or has expired';
+  end if;
+
+  membership_was_new := not exists (
+    select 1
+    from public.league_memberships
+    where league_id = target_invitation.league_id
+      and user_id = auth.uid()
+  );
+
+  insert into public.league_memberships (league_id, user_id, role)
+  values (target_invitation.league_id, auth.uid(), 'member')
+  on conflict (league_id, user_id) do nothing;
+
+  if membership_was_new then
+    update public.league_invitations
+    set use_count = use_count + 1
+    where id = target_invitation.id;
+  end if;
+
+  update public.profiles
+  set active_league_id = target_invitation.league_id
+  where id = auth.uid();
+
+  return target_invitation.league_id;
+end;
+$$;
+
+revoke execute on function public.accept_league_invitation(text, text) from public;
+grant execute on function public.accept_league_invitation(text, text) to authenticated;
+
+revoke execute on function public.join_league_by_slug(text, text) from public, authenticated;
 
 create or replace function public.ensure_default_league_membership(claimed_team_name text default null)
 returns uuid
@@ -475,6 +643,7 @@ end;
 $$;
 
 grant execute on function public.ensure_default_league_membership(text) to authenticated;
+revoke execute on function public.ensure_default_league_membership(text) from public, authenticated;
 
 create or replace function public.claim_draft_team_for_member(target_session_id uuid)
 returns integer
@@ -514,7 +683,7 @@ begin
 end;
 $$;
 
-grant execute on function public.claim_draft_team_for_member(uuid) to authenticated;
+revoke execute on function public.claim_draft_team_for_member(uuid) from public, authenticated;
 
 create or replace function public.assign_first_commissioner()
 returns trigger
@@ -540,37 +709,13 @@ language plpgsql
 security definer
 set search_path = public
 as $$
-declare
-  default_league_id uuid;
-  assigned_role text;
 begin
-  insert into public.profiles (id, username, team_name)
+  insert into public.profiles (id, username)
   values (
     new.id,
-    coalesce(nullif(new.raw_user_meta_data->>'username', ''), split_part(new.email, '@', 1)),
-    nullif(new.raw_user_meta_data->>'team_name', '')
+    coalesce(nullif(new.raw_user_meta_data->>'username', ''), split_part(new.email, '@', 1))
   )
   on conflict (id) do nothing;
-
-  select id
-  into default_league_id
-  from public.leagues
-  where slug = 'rat-race-golf'
-  order by created_at
-  limit 1;
-
-  assigned_role := coalesce((select role from public.profiles where id = new.id), 'member');
-
-  if default_league_id is not null then
-    insert into public.league_memberships (league_id, user_id, role, claimed_team_name)
-    values (default_league_id, new.id, assigned_role, nullif(new.raw_user_meta_data->>'team_name', ''))
-    on conflict (league_id, user_id) do nothing;
-
-    update public.profiles
-    set active_league_id = default_league_id
-    where id = new.id
-      and active_league_id is null;
-  end if;
 
   return new;
 end;
@@ -681,6 +826,18 @@ before update on public.draft_sessions
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists tournament_catalog_set_updated_at on public.tournament_catalog;
+create trigger tournament_catalog_set_updated_at
+before update on public.tournament_catalog
+for each row
+execute function public.set_updated_at();
+
+drop trigger if exists tournament_snapshots_set_updated_at on public.tournament_snapshots;
+create trigger tournament_snapshots_set_updated_at
+before update on public.tournament_snapshots
+for each row
+execute function public.set_updated_at();
+
 drop trigger if exists draft_picks_sync_session_status on public.draft_picks;
 create trigger draft_picks_sync_session_status
 after insert or update or delete on public.draft_picks
@@ -688,10 +845,6 @@ for each row
 execute function public.sync_session_status_from_picks();
 
 drop trigger if exists profiles_assign_first_commissioner on public.profiles;
-create trigger profiles_assign_first_commissioner
-before insert on public.profiles
-for each row
-execute function public.assign_first_commissioner();
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
@@ -702,6 +855,9 @@ execute function public.handle_new_user();
 alter table public.profiles enable row level security;
 alter table public.leagues enable row level security;
 alter table public.league_memberships enable row level security;
+alter table public.league_invitations enable row level security;
+alter table public.tournament_catalog enable row level security;
+alter table public.tournament_snapshots enable row level security;
 alter table public.draft_sessions enable row level security;
 alter table public.draft_teams enable row level security;
 alter table public.draft_picks enable row level security;
@@ -710,16 +866,42 @@ grant select on public.profiles to authenticated;
 revoke insert on public.profiles from authenticated;
 revoke update on public.profiles from authenticated;
 revoke delete on public.profiles from authenticated;
-grant insert (id, username, team_name) on public.profiles to authenticated;
-grant update (username, team_name, active_league_id) on public.profiles to authenticated;
+revoke insert (team_name) on public.profiles from authenticated;
+revoke update (team_name) on public.profiles from authenticated;
+grant insert (id, username) on public.profiles to authenticated;
+grant update (username, active_league_id) on public.profiles to authenticated;
 
 grant select, insert, update, delete on public.leagues to authenticated;
 
 grant select, delete on public.league_memberships to authenticated;
 revoke insert on public.league_memberships from authenticated;
 revoke update on public.league_memberships from authenticated;
-grant insert (league_id, user_id, claimed_team_name) on public.league_memberships to authenticated;
-grant update (claimed_team_name) on public.league_memberships to authenticated;
+revoke insert (claimed_team_name) on public.league_memberships from authenticated;
+revoke update (claimed_team_name) on public.league_memberships from authenticated;
+grant insert (league_id, user_id) on public.league_memberships to authenticated;
+
+revoke all on public.league_invitations from authenticated;
+grant select, delete on public.league_invitations to authenticated;
+grant update (revoked_at) on public.league_invitations to authenticated;
+
+revoke all on public.tournament_catalog from authenticated;
+grant select on public.tournament_catalog to authenticated;
+revoke all on public.tournament_snapshots from authenticated;
+grant select on public.tournament_snapshots to authenticated;
+
+drop policy if exists "tournament catalog authenticated read" on public.tournament_catalog;
+create policy "tournament catalog authenticated read"
+on public.tournament_catalog
+for select
+to authenticated
+using (true);
+
+drop policy if exists "tournament snapshots authenticated read" on public.tournament_snapshots;
+create policy "tournament snapshots authenticated read"
+on public.tournament_snapshots
+for select
+to authenticated
+using (true);
 
 drop policy if exists "public draft_sessions access" on public.draft_sessions;
 drop policy if exists "public draft_teams access" on public.draft_teams;
@@ -800,6 +982,28 @@ with check (user_id = auth.uid() or public.is_league_admin(league_id));
 drop policy if exists "league memberships admin delete" on public.league_memberships;
 create policy "league memberships admin delete"
 on public.league_memberships
+for delete
+to authenticated
+using (public.is_league_commissioner(league_id));
+
+drop policy if exists "league invitations admin select" on public.league_invitations;
+create policy "league invitations admin select"
+on public.league_invitations
+for select
+to authenticated
+using (public.is_league_admin(league_id));
+
+drop policy if exists "league invitations admin update" on public.league_invitations;
+create policy "league invitations admin update"
+on public.league_invitations
+for update
+to authenticated
+using (public.is_league_admin(league_id))
+with check (public.is_league_admin(league_id));
+
+drop policy if exists "league invitations commissioner delete" on public.league_invitations;
+create policy "league invitations commissioner delete"
+on public.league_invitations
 for delete
 to authenticated
 using (public.is_league_commissioner(league_id));

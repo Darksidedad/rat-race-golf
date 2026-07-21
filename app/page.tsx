@@ -6,7 +6,7 @@ import type { User } from "@supabase/supabase-js";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
 
-type EventOption = { id: string; name: string; season: number; startDate?: string; dateLabel?: string; location?: string; course?: string };
+type EventOption = { id: string; catalogId?: string | null; name: string; season: number; startDate?: string; dateLabel?: string; location?: string; course?: string };
 type DraftSession = {
   id: string;
   league_id: string | null;
@@ -15,6 +15,7 @@ type DraftSession = {
   counts_for_season: boolean;
   name: string;
   event_id: string | null;
+  tournament_id?: string | null;
   event_name: string | null;
   player_input: string;
   field_source?: string | null;
@@ -32,16 +33,30 @@ type DraftSession = {
   updated_at: string;
 };
 type DraftTeam = { id: string; session_id: string; name: string; draft_slot: number | null; active: boolean; owner_user_id: string | null; created_at: string };
-type Profile = { id: string; username: string; team_name: string | null; role: "commissioner" | "assistant_commissioner" | "member"; site_role: "site_admin" | "user"; active_league_id: string | null; created_at: string };
+type Profile = { id: string; username: string; role: "commissioner" | "assistant_commissioner" | "member"; site_role: "site_admin" | "user"; active_league_id: string | null; created_at: string };
 type DraftPick = { id: string; session_id: string; team_id: string; player_name: string; player_key: string; pick_number: number; round_number: number; created_at: string };
 type League = { id: string; name: string; slug: string; created_by: string | null; created_at: string };
-type LeagueMembership = { id: string; league_id: string; user_id: string; role: Profile["role"]; claimed_team_name: string | null; created_at: string };
-type NewDraftTeam = { name: string; selected: boolean };
+type LeagueMembership = { id: string; league_id: string; user_id: string; role: Profile["role"]; created_at: string };
+type NewDraftTeam = { name: string; selected: boolean; ownerUserId: string | null };
 type EventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type FieldResponse = { ok: boolean; eventName?: string; players?: string[]; odds?: Record<string, number>; oddsSource?: string; source?: string; error?: string };
 type LeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
 type TournamentLeaderboardRow = { name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null };
 type TournamentLeaderboardResponse = LeaderboardResponse & { rows?: TournamentLeaderboardRow[] };
+
+function normalizedEventName(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\bpresented by\b.*$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function eventNamesMatch(expected: string | null | undefined, actual: string | null | undefined) {
+  const left = normalizedEventName(expected);
+  const right = normalizedEventName(actual);
+  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+}
 type OddsResponse = { ok: boolean; eventName?: string; odds?: Record<string, number>; source?: string; error?: string };
 type SocialProvider = "google" | "facebook" | "apple";
 type PlayerPoolEntry = { name: string; odds?: number };
@@ -80,8 +95,6 @@ const SEASON_EXCLUDED_MARKER = "# RRG_SIDE_EVENT";
 const EVENT_SEASON_MARKER_PREFIX = "# RRG_EVENT_SEASON:";
 const CURRENT_GOLF_SEASON = new Date().getFullYear();
 const HISTORICAL_SEASONS = Array.from({ length: 8 }, (_, index) => CURRENT_GOLF_SEASON - index);
-const DEFAULT_TEAM_NAMES = ["Ryan","Morris","Russ","Swany","Capps","Seth","Jay","Teron","Jesse","Drew","Jimmy","Jones"];
-const DEFAULT_NEW_DRAFT_TEAMS: NewDraftTeam[] = DEFAULT_TEAM_NAMES.map((name) => ({ name, selected: true }));
 const TOUR_OPTIONS = [
   { id: "pga", label: "PGA TOUR" },
   { id: "lpga", label: "LPGA Tour" },
@@ -433,14 +446,12 @@ function resultStatusLabel(position: number | null, total: string | null | undef
   const normalizedThru = normalizeStoredThru(thru);
   const playoff = playoffLabel(meta);
   if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : normalizedThru ? ` - ${normalizedThru}` : ""}`;
-  if (!total && !normalizedThru && !playoff) return "WD";
+  if (!total && !normalizedThru && !playoff) return "Not started";
   return playoff ?? normalizedThru ?? "CUT / no finish";
 }
 
-function formatProfileLabel(username: string, teamName: string | null | undefined) {
-  const trimmedTeam = teamName?.trim();
-  if (!trimmedTeam) return username;
-  return normalizeName(trimmedTeam) === normalizeName(username) ? username : `${username} (${trimmedTeam})`;
+function formatProfileLabel(username: string) {
+  return username;
 }
 
 function authRedirectUrl(mode?: "recovery") {
@@ -638,6 +649,7 @@ export default function Page() {
   const [leagues, setLeagues] = useState<League[]>([]);
   const [memberships, setMemberships] = useState<LeagueMembership[]>([]);
   const [currentLeagueId, setCurrentLeagueId] = useState("");
+  const [leagueContextLoaded, setLeagueContextLoaded] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [currentSession, setCurrentSession] = useState<DraftSession | null>(null);
@@ -656,12 +668,14 @@ export default function Page() {
   const [newSessionCountsForSeason, setNewSessionCountsForSeason] = useState(true);
   const [newSessionEventId, setNewSessionEventId] = useState("");
   const [newDraftModalOpen, setNewDraftModalOpen] = useState(false);
-  const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>(DEFAULT_NEW_DRAFT_TEAMS);
+  const [newDraftTeams, setNewDraftTeams] = useState<NewDraftTeam[]>([]);
+  const [newDraftTeamName, setNewDraftTeamName] = useState("");
   const [draggedNewDraftTeam, setDraggedNewDraftTeam] = useState("");
   const [dragOverNewDraftTeam, setDragOverNewDraftTeam] = useState("");
   const [newLeagueName, setNewLeagueName] = useState("");
   const [newLeagueMemberId, setNewLeagueMemberId] = useState("");
-  const [pendingLeagueSlug, setPendingLeagueSlug] = useState("");
+  const [pendingInvitationToken, setPendingInvitationToken] = useState("");
+  const [leagueInvitationToken, setLeagueInvitationToken] = useState("");
   const [playerPoolDraft, setPlayerPoolDraft] = useState("");
   const [resultPositionEditorOpen, setResultPositionEditorOpen] = useState(false);
   const [resultPositionEdits, setResultPositionEdits] = useState<Record<string, string>>({});
@@ -674,12 +688,10 @@ export default function Page() {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authUsername, setAuthUsername] = useState("");
-  const [authTeamName, setAuthTeamName] = useState("");
   const [passwordResetMode, setPasswordResetMode] = useState(false);
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [recoveryPasswordConfirm, setRecoveryPasswordConfirm] = useState("");
   const [profileDraftName, setProfileDraftName] = useState("");
-  const [profileDraftTeam, setProfileDraftTeam] = useState("");
   const [seasonStats, setSeasonStats] = useState<SeasonTeamStat[]>([]);
   const [seasonStatsLoading, setSeasonStatsLoading] = useState(false);
   const [seasonStatsView, setSeasonStatsView] = useState<SeasonStatsView>("league");
@@ -696,7 +708,6 @@ export default function Page() {
   const [highlightedPlayerIndex, setHighlightedPlayerIndex] = useState(0);
   const [oddsByPlayer, setOddsByPlayer] = useState<Record<string, number>>({});
   const [autoFieldImportAttempts, setAutoFieldImportAttempts] = useState<Record<string, boolean>>({});
-  const [autoTeamClaimAttempts, setAutoTeamClaimAttempts] = useState<Record<string, boolean>>({});
   const [autoFieldRefreshAttempts, setAutoFieldRefreshAttempts] = useState<Record<string, boolean>>({});
   const deferredFilter = useDeferredValue(playerFilter);
   const currentLeague = useMemo(() => leagues.find((league) => league.id === currentLeagueId) ?? null, [leagues, currentLeagueId]);
@@ -759,11 +770,11 @@ export default function Page() {
     && Object.keys(session.current_positions ?? {}).length > 0
   ), [seasonStatsView, yearFilteredSessions]);
   const currentLeagueInviteUrl = useMemo(() => {
-    if (typeof window === "undefined" || !currentLeague?.slug) return "";
+    if (typeof window === "undefined" || !leagueInvitationToken) return "";
     const url = new URL(window.location.origin + window.location.pathname);
-    url.searchParams.set("join", currentLeague.slug);
+    url.searchParams.set("invite", leagueInvitationToken);
     return url.toString();
-  }, [currentLeague?.slug]);
+  }, [leagueInvitationToken]);
   const currentMembership = useMemo(() => memberships.find((membership) => membership.league_id === currentLeagueId && membership.user_id === user?.id) ?? null, [currentLeagueId, memberships, user?.id]);
   const selectedNewDraftEvent = useMemo(() => events.find((event) => event.id === newSessionEventId) ?? null, [events, newSessionEventId]);
   const selectedCurrentSessionEvent = useMemo(() => events.find((event) => event.id === currentSession?.event_id) ?? null, [events, currentSession?.event_id]);
@@ -777,10 +788,10 @@ export default function Page() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
-    const inviteSlug = params.get("join")?.trim().toLowerCase() || window.localStorage.getItem("rrg_pending_league_slug") || "";
-    if (!inviteSlug) return;
-    window.localStorage.setItem("rrg_pending_league_slug", inviteSlug);
-    setPendingLeagueSlug(inviteSlug);
+    const invitationToken = params.get("invite")?.trim() || window.localStorage.getItem("rrg_pending_invitation_token") || "";
+    if (!invitationToken) return;
+    window.localStorage.setItem("rrg_pending_invitation_token", invitationToken);
+    setPendingInvitationToken(invitationToken);
     setStatusMessage("Sign in or create an account to join this league.");
   }, []);
 
@@ -818,17 +829,18 @@ export default function Page() {
       setLeagues([]);
       setMemberships([]);
       setCurrentLeagueId("");
+      setLeagueContextLoaded(false);
       setSessions([]);
       setCurrentSession(null);
       setTeams([]);
       setPicks([]);
       setSelectedSessionId("");
-      setStatusMessage(pendingLeagueSlug ? "Sign in or create an account to join this league." : "Sign in to access the league.");
+      setStatusMessage(pendingInvitationToken ? "Sign in or create an account to join this league." : "Sign in to access the league.");
       return;
     }
 
     void loadProfile(user.id);
-  }, [authChecked, pendingLeagueSlug, user]);
+  }, [authChecked, pendingInvitationToken, user]);
 
 
   useEffect(() => {
@@ -911,6 +923,11 @@ export default function Page() {
   }, [currentSession?.id, currentSession?.player_input, currentSession?.manual_leaderboard_input]);
 
   useEffect(() => {
+    setTournamentLeaderboardRows([]);
+    setTournamentLeaderboardOpen(false);
+  }, [selectedSessionId]);
+
+  useEffect(() => {
     if (!currentSession) return;
     setNewDraftTour(currentSession.event_tour ?? "pga");
     setNewDraftSeason(resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession));
@@ -952,8 +969,7 @@ export default function Page() {
 
   useEffect(() => {
     setProfileDraftName(profile?.username ?? "");
-    setProfileDraftTeam(currentMembership?.claimed_team_name ?? profile?.team_name ?? "");
-  }, [currentMembership?.claimed_team_name, profile?.username, profile?.team_name]);
+  }, [profile?.username]);
 
   useEffect(() => {
     if (activeRoomTab !== "season" || !sessions.length) return;
@@ -1005,11 +1021,10 @@ export default function Page() {
     });
   }, [assignedTeams, draftComplete, picks, totalPicks]);
   const teamDraftRosters = useMemo(() => {
-    const claimedTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? "";
     return assignedTeams
       .map((team) => ({
         team,
-        isMine: team.owner_user_id === user?.id || (!!claimedTeamName && normalizeName(team.name) === normalizeName(claimedTeamName)),
+        isMine: team.owner_user_id === user?.id,
         picks: picks
           .filter((pick) => pick.team_id === team.id)
           .sort((a, b) => a.round_number - b.round_number || a.pick_number - b.pick_number),
@@ -1018,7 +1033,7 @@ export default function Page() {
         if (a.isMine !== b.isMine) return a.isMine ? -1 : 1;
         return (a.team.draft_slot ?? 999) - (b.team.draft_slot ?? 999);
       });
-  }, [assignedTeams, currentMembership?.claimed_team_name, picks, profile?.team_name, user?.id]);
+  }, [assignedTeams, picks, user?.id]);
   const leaderboard = useMemo(() => {
     const storedPositions = currentSession?.current_positions ?? {};
     const totals = currentSession?.current_totals ?? {};
@@ -1074,8 +1089,6 @@ export default function Page() {
   const setupReady = setupHasEvent && setupHasTeams && setupHasField;
   const tournamentIdentityLocked = picks.length > 0;
   const tournamentWorkspaceReady = !currentLeagueId || (defaultSessionResolved && (!selectedSessionId || currentSession?.id === selectedSessionId));
-  const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
-  const showTeamPill = !!activeTeamName && !!profile?.username && normalizeName(activeTeamName) !== normalizeName(profile.username);
   const [draftFlowWidth, setDraftFlowWidth] = useState(0);
   const draftFlowCardWidth = draftFlowWidth ? Math.max(0, (draftFlowWidth - 32) / 5) : 0;
   const draftFlowCenterPadding = draftFlowWidth && draftFlowCardWidth ? (draftFlowWidth - draftFlowCardWidth) / 2 : 0;
@@ -1102,10 +1115,6 @@ export default function Page() {
   useEffect(() => {
     autoImportMissingPlayerPool();
   }, [canManageLeague, currentSession?.id, currentSession?.event_id, currentSession?.event_tour, currentSession?.manual_leaderboard_input, currentSession?.player_input, resolvedSessionSeasons]);
-
-  useEffect(() => {
-    autoClaimMatchingDraftTeam();
-  }, [activeTeamName, currentSession?.id, teams, user?.id]);
 
   useEffect(() => {
     autoRefreshFieldBeforeDraft();
@@ -1175,6 +1184,7 @@ export default function Page() {
   }
 
   async function loadProfile(userId: string) {
+    setLeagueContextLoaded(false);
     const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).maybeSingle();
     if (error) {
       console.error(error);
@@ -1185,42 +1195,34 @@ export default function Page() {
     const nextProfile = (data as Profile | null) ?? null;
     setProfile(nextProfile);
 
-    const defaultLeagueResult = await supabase.rpc("ensure_default_league_membership", {
-      claimed_team_name: nextProfile?.team_name ?? null,
-    });
-    if (defaultLeagueResult.error) {
-      console.warn("Could not ensure default league membership.", defaultLeagueResult.error);
-    }
-
-    await joinPendingLeagueInvite(nextProfile);
+    await joinPendingLeagueInvite();
     await loadLeagueContext(userId, nextProfile);
   }
 
-  async function joinPendingLeagueInvite(nextProfile: Profile | null) {
-    const inviteSlug = pendingLeagueSlug || (typeof window !== "undefined" ? window.localStorage.getItem("rrg_pending_league_slug") ?? "" : "");
-    if (!inviteSlug) return;
+  async function joinPendingLeagueInvite() {
+    const invitationToken = pendingInvitationToken || (typeof window !== "undefined" ? window.localStorage.getItem("rrg_pending_invitation_token") ?? "" : "");
+    if (!invitationToken) return;
 
-    const joinResult = await supabase.rpc("join_league_by_slug", {
-      target_slug: inviteSlug,
-      claimed_team_name: nextProfile?.team_name ?? null,
+    const joinResult = await supabase.rpc("accept_league_invitation", {
+      invitation_token: invitationToken,
     });
 
     if (joinResult.error || !joinResult.data) {
       console.error(joinResult.error);
-      if (typeof window !== "undefined") window.localStorage.removeItem("rrg_pending_league_slug");
-      setPendingLeagueSlug("");
+      if (typeof window !== "undefined") window.localStorage.removeItem("rrg_pending_invitation_token");
+      setPendingInvitationToken("");
       setStatusMessage(joinResult.error?.message || "Could not join that league invite.");
       return;
     }
 
     if (typeof window !== "undefined") {
-      window.localStorage.removeItem("rrg_pending_league_slug");
+      window.localStorage.removeItem("rrg_pending_invitation_token");
       const url = new URL(window.location.href);
-      url.searchParams.delete("join");
+      url.searchParams.delete("invite");
       window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
     }
 
-    setPendingLeagueSlug("");
+    setPendingInvitationToken("");
     setCurrentLeagueId(joinResult.data as string);
     setStatusMessage("Joined the league.");
   }
@@ -1230,6 +1232,7 @@ export default function Page() {
     if (membershipResult.error) {
       console.error(membershipResult.error);
       setStatusMessage("Could not load your league memberships.");
+      setLeagueContextLoaded(true);
       return;
     }
 
@@ -1249,6 +1252,7 @@ export default function Page() {
     if (leagueResult.error) {
       console.error(leagueResult.error);
       setStatusMessage("Could not load your leagues.");
+      setLeagueContextLoaded(true);
       return;
     }
 
@@ -1259,6 +1263,7 @@ export default function Page() {
       if (nextProfile?.active_league_id && nextLeagues.some((league) => league.id === nextProfile.active_league_id)) return nextProfile.active_league_id;
       return nextMemberships[0]?.league_id ?? nextLeagues[0]?.id ?? "";
     });
+    setLeagueContextLoaded(true);
   }
 
   async function loadProfiles() {
@@ -1293,11 +1298,9 @@ export default function Page() {
     }
 
     const roleByUserId = new Map(leagueMemberships.map((membership) => [membership.user_id, membership.role]));
-    const claimedTeamByUserId = new Map(leagueMemberships.map((membership) => [membership.user_id, membership.claimed_team_name]));
     setProfiles(((data ?? []) as Profile[]).map((entry) => ({
       ...entry,
       role: roleByUserId.get(entry.id) ?? entry.role,
-      team_name: claimedTeamByUserId.get(entry.id) ?? entry.team_name,
     })));
   }
 
@@ -1356,7 +1359,6 @@ export default function Page() {
       options: {
         data: {
           username: authUsername.trim(),
-          team_name: authTeamName.trim() || null,
         },
       },
     });
@@ -1442,6 +1444,7 @@ export default function Page() {
 
   async function changeActiveLeague(nextLeagueId: string) {
     if (!user || !nextLeagueId || nextLeagueId === currentLeagueId) return;
+    setLeagueInvitationToken("");
     setCurrentLeagueId(nextLeagueId);
     setBusy("Switching league...");
     const { error } = await supabase.from("profiles").update({ active_league_id: nextLeagueId }).eq("id", user.id);
@@ -1470,9 +1473,8 @@ export default function Page() {
     }
 
     setBusy("Creating league...");
-    const leagueResult = await supabase.rpc("create_league_for_site_admin", {
+    const leagueResult = await supabase.rpc("create_league", {
       target_name: leagueName,
-      commissioner_claimed_team_name: activeTeamName,
     });
 
     if (leagueResult.error || !leagueResult.data) {
@@ -1482,11 +1484,43 @@ export default function Page() {
       return;
     }
 
+    const createdLeagueId = leagueResult.data as string;
+    const inviteResult = await supabase.rpc("create_league_invitation", {
+      target_league_id: createdLeagueId,
+      expires_in_days: 14,
+      target_max_uses: 25,
+    });
+
     setNewLeagueName("");
     setBusy("");
-    setStatusMessage(`Created ${leagueName}.`);
-    setCurrentLeagueId(leagueResult.data as string);
+    setStatusMessage(inviteResult.error ? `Created ${leagueName}, but could not generate its first invitation.` : `Created ${leagueName}. Its invitation is ready to share.`);
+    setCurrentLeagueId(createdLeagueId);
+    setLeagueInvitationToken((inviteResult.data as string | null) ?? "");
     await loadProfile(user.id);
+  }
+
+  async function generateLeagueInvitation() {
+    if (!currentLeagueId || !isLeagueAdmin) {
+      setStatusMessage("Only a league admin can create invitation links.");
+      return;
+    }
+
+    setBusy("Generating invitation...");
+    const inviteResult = await supabase.rpc("create_league_invitation", {
+      target_league_id: currentLeagueId,
+      expires_in_days: 14,
+      target_max_uses: 25,
+    });
+    setBusy("");
+
+    if (inviteResult.error || !inviteResult.data) {
+      console.error(inviteResult.error);
+      setStatusMessage(inviteResult.error?.message || "Could not generate an invitation link.");
+      return;
+    }
+
+    setLeagueInvitationToken(inviteResult.data as string);
+    setStatusMessage("Created a new invitation link. It expires in 14 days.");
   }
 
   async function copyLeagueInviteLink() {
@@ -1530,7 +1564,6 @@ export default function Page() {
     const { error } = await supabase.from("league_memberships").insert([{
       league_id: currentLeagueId,
       user_id: selectedProfile.id,
-      claimed_team_name: selectedProfile.team_name,
     }]);
     setBusy("");
 
@@ -1561,7 +1594,6 @@ export default function Page() {
       availableSiteProfiles.map((entry) => ({
         league_id: currentLeagueId,
         user_id: entry.id,
-        claimed_team_name: entry.team_name,
       }))
     );
     setBusy("");
@@ -1579,7 +1611,6 @@ export default function Page() {
   async function saveProfile() {
     if (!user) return;
     const nextName = profileDraftName.trim();
-    const nextTeam = profileDraftTeam.trim();
 
     if (!nextName) {
       setStatusMessage("Display name cannot be empty.");
@@ -1599,21 +1630,6 @@ export default function Page() {
       setBusy("");
       setStatusMessage(error.message || "Could not save your profile.");
       return;
-    }
-
-    if (currentLeagueId) {
-      const membershipResult = await supabase
-        .from("league_memberships")
-        .update({ claimed_team_name: nextTeam || null })
-        .eq("league_id", currentLeagueId)
-        .eq("user_id", user.id);
-
-      if (membershipResult.error) {
-        console.error(membershipResult.error);
-        setBusy("");
-        setStatusMessage("Your profile saved, but your league team claim could not be updated.");
-        return;
-      }
     }
 
     setBusy("");
@@ -1651,18 +1667,6 @@ export default function Page() {
     }
 
     const seasonTeams = (teamsResult.data ?? []) as DraftTeam[];
-    const ownerIds = Array.from(new Set(seasonTeams.map((team) => team.owner_user_id).filter((ownerId): ownerId is string => !!ownerId)));
-    const ownerProfilesResult = ownerIds.length
-      ? await supabase.from("profiles").select("id, team_name").in("id", ownerIds)
-      : { data: [], error: null };
-    if (ownerProfilesResult.error) console.error(ownerProfilesResult.error);
-    const currentTeamNameByOwner = new Map<string, string>();
-    ((ownerProfilesResult.data ?? []) as Pick<Profile, "id" | "team_name">[]).forEach((ownerProfile) => {
-      if (ownerProfile.team_name?.trim()) currentTeamNameByOwner.set(ownerProfile.id, ownerProfile.team_name.trim());
-    });
-    profiles.forEach((ownerProfile) => {
-      if (ownerProfile.team_name?.trim()) currentTeamNameByOwner.set(ownerProfile.id, ownerProfile.team_name.trim());
-    });
     const ownerByHistoricalTeamName = new Map<string, string>();
     const ambiguousHistoricalTeamNames = new Set<string>();
     seasonTeams.forEach((team) => {
@@ -1725,7 +1729,7 @@ export default function Page() {
           { name: player.pick.player_name, count: 1, points: player.points },
         ]));
         const effectiveOwnerId = team.owner_user_id ?? ownerByHistoricalTeamName.get(normalizeName(team.name)) ?? null;
-        const teamName = effectiveOwnerId ? currentTeamNameByOwner.get(effectiveOwnerId) ?? team.name : team.name;
+        const teamName = team.name;
         const teamKey = effectiveOwnerId ? `owner:${effectiveOwnerId}` : `name:${normalizeName(teamName)}`;
         return {
           teamKey,
@@ -1845,38 +1849,6 @@ export default function Page() {
     const ownerId = ownerUserId || null;
     const selectedProfile = profiles.find((entry) => entry.id === ownerId) ?? null;
     const nextTeamName = team.name;
-
-    if (team.owner_user_id && team.owner_user_id !== ownerId) {
-      if (currentLeagueId) {
-        const { error: previousMembershipError } = await supabase
-          .from("league_memberships")
-          .update({ claimed_team_name: null })
-          .eq("league_id", currentLeagueId)
-          .eq("user_id", team.owner_user_id);
-
-        if (previousMembershipError) {
-          console.error(previousMembershipError);
-          setStatusMessage("The team owner changed, but the previous member's league claim could not be cleared.");
-          return;
-        }
-      }
-    }
-
-    if (ownerId) {
-      if (currentLeagueId) {
-        const { error: membershipError } = await supabase
-          .from("league_memberships")
-          .update({ claimed_team_name: nextTeamName })
-          .eq("league_id", currentLeagueId)
-          .eq("user_id", ownerId);
-
-        if (membershipError) {
-          console.error(membershipError);
-          setStatusMessage("Could not sync that member's league team claim.");
-          return;
-        }
-      }
-    }
 
     await updateTeam(
       team.id,
@@ -2324,11 +2296,28 @@ export default function Page() {
   }
 
   function resetNewDraftForm() {
-    setNewDraftTeams(DEFAULT_NEW_DRAFT_TEAMS);
+    setNewDraftTeams(profiles.map((entry) => ({ name: entry.username, selected: true, ownerUserId: entry.id })));
+    setNewDraftTeamName("");
     setNewSessionCountsForSeason(true);
     setDraggedNewDraftTeam("");
     setDragOverNewDraftTeam("");
     if (events[0]?.id) setNewSessionEventId(events[0].id);
+  }
+
+  function openNewDraftModal() {
+    resetNewDraftForm();
+    setNewDraftModalOpen(true);
+  }
+
+  function addNewDraftTeam() {
+    const teamName = newDraftTeamName.trim();
+    if (!teamName) return;
+    if (newDraftTeams.some((team) => normalizeName(team.name) === normalizeName(teamName))) {
+      setStatusMessage("That team is already in this draft.");
+      return;
+    }
+    setNewDraftTeams((current) => [...current, { name: teamName, selected: true, ownerUserId: null }]);
+    setNewDraftTeamName("");
   }
 
   function toggleNewDraftTeam(teamName: string) {
@@ -2357,7 +2346,7 @@ export default function Page() {
   }
 
   function startNewDraftTeamDrag(event: DragEvent<HTMLDivElement>, teamName: string) {
-    if (event.target instanceof HTMLElement && event.target.closest("input, label")) {
+    if (event.target instanceof HTMLElement && event.target.closest("input, label, select, button")) {
       event.preventDefault();
       return;
     }
@@ -2468,17 +2457,19 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` Data Golf field was not imported: ${error.message}` : " Data Golf field was not imported yet.";
     }
-    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
+    const sessionPayload = { league_id: currentLeagueId, tournament_id: event.catalogId ?? null, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
     let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
     if (sessionInsert.error && (
       isMissingColumnError(sessionInsert.error, "event_tour")
       || isMissingColumnError(sessionInsert.error, "event_season")
       || isMissingColumnError(sessionInsert.error, "counts_for_season")
+      || isMissingColumnError(sessionInsert.error, "tournament_id")
     )) {
       const fallbackPayload: Record<string, unknown> = { ...sessionPayload };
       delete fallbackPayload.event_tour;
       delete fallbackPayload.event_season;
       delete fallbackPayload.counts_for_season;
+      delete fallbackPayload.tournament_id;
       sessionInsert = await supabase.from("draft_sessions").insert([fallbackPayload]).select("*").single();
     }
     if (sessionInsert.error || !sessionInsert.data) {
@@ -2486,18 +2477,12 @@ export default function Page() {
       setBusy("");
       return setStatusMessage(`Could not create the tournament session${sessionInsert.error?.message ? `: ${sessionInsert.error.message}` : "."}`);
     }
-    const membershipResult = await supabase.from("league_memberships").select("user_id, claimed_team_name").eq("league_id", currentLeagueId).not("claimed_team_name", "is", null);
-    const ownerByTeam = new Map(
-      (((membershipResult.data ?? []) as Pick<LeagueMembership, "user_id" | "claimed_team_name">[])
-        .filter((entry): entry is Pick<LeagueMembership, "user_id" | "claimed_team_name"> & { claimed_team_name: string } => !!entry.claimed_team_name)
-        .map((entry) => [normalizeName(entry.claimed_team_name), entry.user_id]))
-    );
     const teamsInsert = await supabase.from("draft_teams").insert(newDraftTeams.map((team) => ({
       session_id: sessionInsert.data.id,
       name: team.name,
       draft_slot: team.selected ? selectedDraftTeams.findIndex((entry) => entry.name === team.name) + 1 : null,
       active: team.selected,
-      owner_user_id: ownerByTeam.get(normalizeName(team.name)) ?? null,
+      owner_user_id: team.ownerUserId,
     })));
     if (teamsInsert.error) {
       console.error(teamsInsert.error);
@@ -2580,32 +2565,6 @@ export default function Page() {
     setBusy("");
   }
 
-  async function autoClaimMatchingDraftTeam() {
-    if (!user || !currentSession?.id || !activeTeamName?.trim()) return;
-    const attemptKey = `${currentSession.id}:${user.id}`;
-    if (autoTeamClaimAttempts[attemptKey]) return;
-
-    const normalizedClaim = normalizeName(activeTeamName);
-    const matchingTeam = teams.find((team) => team.active && normalizeName(team.name) === normalizedClaim);
-    if (!matchingTeam || matchingTeam.owner_user_id === user.id || matchingTeam.owner_user_id) return;
-
-    setAutoTeamClaimAttempts((current) => ({ ...current, [attemptKey]: true }));
-
-    const { data, error } = await supabase.rpc("claim_draft_team_for_member", {
-      target_session_id: currentSession.id,
-    });
-
-    if (error) {
-      console.error(error);
-      return;
-    }
-
-    if ((data ?? 0) > 0) {
-      setStatusMessage(`Linked your account to ${matchingTeam.name}.`);
-      await loadSession(currentSession.id, false, false);
-    }
-  }
-
   async function autoRefreshFieldBeforeDraft() {
     if (!canManageLeague || activeRoomTab !== "draft" || !currentSession?.id || !currentSession.event_id) return;
     if (!storedEventSeason(currentSession.manual_leaderboard_input) && !resolvedSessionSeasons[currentSession.id]) return;
@@ -2655,13 +2614,16 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       let payload = await readJsonResponse<LeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
         response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
         payload = await readJsonResponse<LeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.leaderboard) throw new Error(payload?.error ?? "Data Golf did not return leaderboard data.");
+      if (!eventNamesMatch(currentSession.event_name, payload.eventName)) {
+        throw new Error(`Leaderboard event mismatch: expected ${currentSession.event_name ?? currentSession.name}, received ${payload.eventName ?? "an unidentified event"}.`);
+      }
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
@@ -2685,13 +2647,16 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       let payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
         response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
         payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.rows) throw new Error(payload?.error ?? "Data Golf did not return tournament leaderboard rows.");
+      if (!eventNamesMatch(currentSession.event_name, payload.eventName)) {
+        throw new Error(`Leaderboard event mismatch: expected ${currentSession.event_name ?? currentSession.name}, received ${payload.eventName ?? "an unidentified event"}.`);
+      }
       setTournamentLeaderboardRows(payload.rows);
     } catch (error) {
       console.error(error);
@@ -2982,7 +2947,7 @@ export default function Page() {
             <div>
               <BrandMark compact />
               <p className="mb-0 mt-4 text-[#617061]">
-                {pendingLeagueSlug ? "You have a league invite. Sign in or create an account and we will add you to that league." : "Create an account to draft for your team, follow live results, and review past tournaments."}
+                {pendingInvitationToken ? "You have a league invitation. Sign in or create an account and we will add you to that league." : "Create an account to draft for your team, follow live results, and review past tournaments."}
               </p>
             </div>
 
@@ -3013,10 +2978,7 @@ export default function Page() {
 
             <div className="grid gap-3">
               {authMode === "sign_up" ? (
-                <>
-                  <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="Username" />
-                  <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authTeamName} onChange={(event) => setAuthTeamName(event.target.value)} placeholder="Team name in your league (optional)" />
-                </>
+                <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authUsername} onChange={(event) => setAuthUsername(event.target.value)} placeholder="Username" />
               ) : null}
               <input className="rounded-xl border border-black/15 bg-white px-3 py-3" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Email address" />
               <input className="rounded-xl border border-black/15 bg-white px-3 py-3" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} onKeyDown={handleAuthPasswordKeyDown} placeholder="Password" />
@@ -3029,6 +2991,46 @@ export default function Page() {
             <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
               {busy || statusMessage}
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!profile || !leagueContextLoaded) {
+    return (
+      <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="mx-auto grid min-h-[70vh] max-w-[720px] place-items-center">
+          <div className="rrg-card w-full rounded-[2rem] p-8">
+            <BrandMark compact />
+            <p className="mb-0 mt-4 text-[#617061]">{statusMessage || "Loading your league access..."}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentLeagueId) {
+    return (
+      <div className="rrg-shell min-h-screen px-4 py-6 text-[#1f2a1d] xl:px-6">
+        <div className="mx-auto grid min-h-[70vh] max-w-[760px] place-items-center">
+          <div className="rrg-card grid w-full gap-6 rounded-[2rem] p-8">
+            <div>
+              <BrandMark compact />
+              <h1 className="mb-0 mt-6 font-[Georgia] text-3xl">Set up your league</h1>
+              <p className="mb-0 mt-2 text-[#617061]">Create a new league as its commissioner, or open a secure invitation link from another commissioner.</p>
+            </div>
+            <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-5">
+              <label className="grid gap-2 text-sm font-medium text-[#1f2a1d]">
+                League name
+                <input className="rounded-xl border border-black/15 bg-white px-3 py-3 font-normal" value={newLeagueName} onChange={(event) => setNewLeagueName(event.target.value)} placeholder="For example, Sunday Golf League" />
+              </label>
+              <button className="rounded-full bg-[#1a5c3a] px-4 py-3 text-white disabled:opacity-50" disabled={busy === "Creating league..."} onClick={createLeague}>
+                {busy === "Creating league..." ? busy : "Create League"}
+              </button>
+            </div>
+            <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">{busy || statusMessage}</div>
+            <button className="justify-self-start rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
           </div>
         </div>
       </div>
@@ -3052,7 +3054,7 @@ export default function Page() {
                 ) : null}
                 <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "season" ? "bg-[#1a5c3a] text-white" : "bg-[#f7f2e9] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("season")}>Season</button>
                 <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "profile" ? "bg-[#1a5c3a] text-white" : "bg-[#f7f2e9] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("profile")}>Profile</button>
-                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : (showTeamPill ? <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-[#6a5940]">{activeTeamName}</span> : null)}
+                {canManageLeague ? <button className={`rounded-full px-3 py-1 text-xs ${activeRoomTab === "admin" ? "bg-[#1a5c3a] text-white" : "bg-[#f2eadf] text-[#6a5940]"}`} onClick={() => setActiveRoomTab("admin")}>Admin</button> : null}
               </div>
               <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-sm text-[#1a5c3a]" onClick={signOut}>Sign Out</button>
             </div>
@@ -3060,7 +3062,7 @@ export default function Page() {
 
         {newDraftModalOpen ? (
           <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 px-4 py-6">
-            <div className="grid max-h-[92vh] w-full max-w-[980px] gap-5 overflow-auto rounded-3xl bg-[#fbf7ef] p-5 text-[#1f2a1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
+            <div className="grid max-h-[92vh] w-full max-w-[1120px] gap-5 overflow-x-hidden overflow-y-auto rounded-3xl bg-[#fbf7ef] p-5 text-[#1f2a1d] shadow-[0_24px_80px_rgba(0,0,0,0.28)]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="m-0 font-[Georgia] text-3xl">New Draft</h2>
@@ -3129,6 +3131,7 @@ export default function Page() {
                     <span className="rounded-full bg-[#f2eadf] px-3 py-1 text-xs text-[#617061]">Draft order</span>
                   </div>
                   <div className="grid gap-2 rounded-2xl border border-black/10 bg-[#f7f2e9]/70 p-2 md:grid-cols-2">
+                    {!newDraftTeams.length ? <div className="rounded-xl bg-white/80 px-4 py-3 text-sm text-[#617061] md:col-span-2">No league members are available yet. Add a team manually below or return to League Admin to add members.</div> : null}
                     {newDraftTeams.map((team) => {
                       const selectedTeams = newDraftTeams.filter((entry) => entry.selected);
                       const selectedIndex = team.selected ? selectedTeams.findIndex((entry) => entry.name === team.name) : -1;
@@ -3143,7 +3146,7 @@ export default function Page() {
                             finishNewDraftTeamDrag();
                           }}
                           onDragEnd={finishNewDraftTeamDrag}
-                          className={`grid select-none gap-3 rounded-2xl border px-3 py-2.5 transition sm:grid-cols-[auto_auto_minmax(0,1fr)] sm:items-center ${team.selected ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${
+                          className={`grid min-w-0 select-none grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-2 rounded-2xl border px-3 py-2.5 transition ${team.selected ? "cursor-grab active:cursor-grabbing" : "cursor-default"} ${
                             draggedNewDraftTeam === team.name
                               ? "border-[#1a5c3a] bg-[#d9eadf] opacity-55"
                               : dragOverNewDraftTeam === team.name
@@ -3158,10 +3161,14 @@ export default function Page() {
                             <input draggable={false} type="checkbox" checked={team.selected} onChange={() => toggleNewDraftTeam(team.name)} />
                             {team.selected ? `#${selectedIndex + 1}` : "Out"}
                           </label>
-                          <div className="min-w-0 font-semibold">{team.name}</div>
+                          <div className="min-w-0 truncate text-sm font-semibold" title={team.name}>{team.name}</div>
                         </div>
                       );
                     })}
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                    <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newDraftTeamName} onChange={(event) => setNewDraftTeamName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addNewDraftTeam(); } }} placeholder="Add a team to this league's draft" />
+                    <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={addNewDraftTeam}>Add Team</button>
                   </div>
                 </div>
               </div>
@@ -3309,7 +3316,7 @@ export default function Page() {
           {!canManageLeague ? <h2 className="mb-4 mt-0 font-[Georgia] text-2xl">League Hub</h2> : null}
             {canManageLeague ? (
               <div className="grid min-w-0 gap-3">
-                <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 font-semibold text-white" onClick={() => setNewDraftModalOpen(true)}>New Draft</button>
+                <button className="w-full rounded-full bg-[#1a5c3a] px-4 py-3 font-semibold text-white" onClick={openNewDraftModal}>New Draft</button>
                 <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
                   Set the event, teams, and draft order before the room opens.
                 </div>
@@ -3390,7 +3397,7 @@ export default function Page() {
         <section className={`rrg-card rounded-3xl ${activeRoomTab === "draft" ? "p-4" : "p-5"}`}>
             <div className={`${activeRoomTab === "draft" ? "mb-2" : "mb-3"} grid items-start gap-3 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]`}>
               <div className="min-w-0">
-                <h2 className="m-0 font-[Georgia] text-2xl">{activeRoomTab === "season" ? `${currentLeague?.name ?? "League"} Season` : currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
+                <h2 className="m-0 font-[Georgia] text-2xl">{activeRoomTab === "season" ? `${currentLeague?.name ?? "League"} Season` : activeRoomTab === "admin" ? `${currentLeague?.name ?? "League"} Admin` : activeRoomTab === "profile" ? "My Profile" : currentSession ? currentSession.event_name || currentSession.name : "Pick a session"}</h2>
                 {currentSession && activeRoomTab === "results" ? (
                   <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#617061]">
                     {currentSessionDisplayEvent?.course ? <a className="font-medium text-[#1a5c3a] underline decoration-[#1a5c3a]/25 underline-offset-2" href={courseWebsiteUrl(currentSessionDisplayEvent)} target="_blank" rel="noreferrer">{currentSessionDisplayEvent.course}</a> : null}
@@ -3423,14 +3430,14 @@ export default function Page() {
                     {canEditResultPositions ? <button className="rounded-full border border-[#1a5c3a]/25 bg-white px-3 py-1.5 text-sm font-semibold text-[#1a5c3a]" onClick={openResultPositionEditor}>Edit Final Positions</button> : null}
                   </>
                 ) : (
-                  <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{activeRoomTab === "season" ? "League stats" : currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
+                  <span className="rounded-full bg-[#d9eadf] px-3 py-1 text-xs text-[#1a5c3a]">{activeRoomTab === "season" ? "League stats" : activeRoomTab === "admin" ? "League management" : activeRoomTab === "profile" ? "Account settings" : currentSession ? statusLabel(currentSession.status) : "No session selected"}</span>
                 )}
               </div>
             </div>
 
-            {!currentSession ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
+            {!currentSession && !["admin", "profile", "season"].includes(activeRoomTab) ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{canManageLeague ? "Create a tournament session on the left, then click it to open the shared draft room." : "Pick a saved tournament on the left to watch the draft, follow the leaderboard, and review past results."}</div> : (
               <div className={activeRoomTab === "draft" ? "grid gap-3" : "grid gap-5"}>
-                {canManageLeague && activeRoomTab === "setup" ? (
+                {currentSession && canManageLeague && activeRoomTab === "setup" ? (
                   <div className="grid gap-5">
                     <div className="rounded-3xl border border-black/10 bg-white/60 p-5">
                       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -3615,14 +3622,15 @@ export default function Page() {
                             <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={createLeague}>Create League</button>
                           </div>
                           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
-                            <input className="rounded-xl border border-black/15 bg-white px-3 py-2 text-sm text-[#617061]" readOnly value={currentLeagueInviteUrl} placeholder="Invite link appears after selecting a league" />
+                            <input className="rounded-xl border border-black/15 bg-white px-3 py-2 text-sm text-[#617061]" readOnly value={currentLeagueInviteUrl} placeholder="Generate a secure invitation link" />
                             <div className="flex flex-wrap gap-2">
-                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={copyLeagueInviteLink}>Copy Link</button>
-                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={openLeagueInviteEmail}>Email</button>
-                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={openLeagueInviteSms}>SMS</button>
+                              <button className="rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={generateLeagueInvitation}>New Link</button>
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a] disabled:opacity-50" disabled={!currentLeagueInviteUrl} onClick={copyLeagueInviteLink}>Copy Link</button>
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a] disabled:opacity-50" disabled={!currentLeagueInviteUrl} onClick={openLeagueInviteEmail}>Email</button>
+                              <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a] disabled:opacity-50" disabled={!currentLeagueInviteUrl} onClick={openLeagueInviteSms}>SMS</button>
                             </div>
                           </div>
-                          <div className="text-sm text-[#617061]">Send this link to anyone who should join the league. They can create a new account or sign in with an existing one, and the app will add this league to their account.</div>
+                          <div className="text-sm text-[#617061]">Each secure link expires after 14 days or 25 new members. Generate a new link whenever the old one should no longer be shared.</div>
                         </div>
                         {isSiteAdmin ? (
                           <div className="grid gap-3 rounded-2xl border border-black/10 bg-white/75 p-4">
@@ -3633,7 +3641,7 @@ export default function Page() {
                             <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
                               <select className="rounded-xl border border-black/15 bg-white px-3 py-2" value={newLeagueMemberId} onChange={(event) => setNewLeagueMemberId(event.target.value)}>
                                 <option value="">{availableSiteProfiles.length ? "Add existing account to this league" : "All accounts are in this league"}</option>
-                                {availableSiteProfiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username, entry.team_name)}</option>)}
+                                {availableSiteProfiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username)}</option>)}
                               </select>
                               <div className="flex flex-wrap gap-2">
                                 <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2 text-[#1a5c3a]" onClick={addExistingMemberToLeague}>Add Member</button>
@@ -3655,7 +3663,6 @@ export default function Page() {
                                       <div className="grid gap-1">
                                         <strong>{entry.username}</strong>
                                         <span className="text-[#617061]">{roleLabel(entry.role)}</span>
-                                        <span className="text-[#617061]">{entry.team_name ? `Claimed team: ${entry.team_name}` : "No team claimed yet"}</span>
                                       </div>
                                       {canManagePermissions && entry.role !== "commissioner" ? <div className="grid gap-2 justify-items-end"><select className="rounded-xl border border-black/15 bg-white px-2 py-1 text-xs" value={entry.role} onChange={(event) => updateMemberRole(entry, event.target.value as "assistant_commissioner" | "member")}><option value="member">Member</option><option value="assistant_commissioner">Assistant Commissioner</option></select><button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1 text-xs text-[#9d4b2f]" onClick={() => removeMember(entry)}>Remove</button></div> : null}
                                     </div>
@@ -3664,7 +3671,7 @@ export default function Page() {
                               </div>
                           )}
                         </div>
-                        <div className="flex flex-wrap gap-3 rounded-2xl border border-black/10 bg-white/75 p-3">
+                        {currentSession ? <><div className="flex flex-wrap gap-3 rounded-2xl border border-black/10 bg-white/75 p-3">
                           <input
                             className="min-w-[220px] flex-1 rounded-xl border border-black/15 bg-white px-3 py-2"
                           value={newTeamName}
@@ -3681,7 +3688,7 @@ export default function Page() {
                               <input className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.name} onChange={(event) => setTeams((current) => current.map((entry) => entry.id === team.id ? { ...entry, name: event.target.value } : entry))} onBlur={(event) => updateTeam(team.id, { name: event.target.value.trim() || team.name }, `Saved team name \"${event.target.value.trim() || team.name}\".`)} />
                               <select className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-sm" value={team.owner_user_id ?? ""} onChange={(event) => assignTeamOwner(team, event.target.value)}>
                                 <option value="">No owner</option>
-                                {profiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username, entry.team_name)}</option>)}
+                                {profiles.map((entry) => <option key={entry.id} value={entry.id}>{formatProfileLabel(entry.username)}</option>)}
                               </select>
                               <div className="flex flex-wrap items-center justify-between gap-2 text-sm xl:justify-end xl:pl-2">
                                 <span className="text-[#617061]">{team.draft_slot ? `Pick ${team.draft_slot} this week` : "Not in this week's draft"}{team.owner_user_id ? " - Owner assigned" : ""}</span>
@@ -3694,6 +3701,7 @@ export default function Page() {
                             </div>
                           ))}
                         </div>
+                        </> : <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] p-4 text-sm text-[#617061]">This league has no draft room yet. Use New Draft to add its first teams and tournament.</div>}
                     </div>
                   </div>
                   </div>
@@ -3712,11 +3720,6 @@ export default function Page() {
                           <input className="rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={profileDraftName} onChange={(event) => setProfileDraftName(event.target.value)} placeholder="Display name" />
                           <span>This is the name everyone sees for your account around the league.</span>
                         </label>
-                        <label className="grid gap-1 text-sm text-[#617061]">
-                          <span className="font-medium text-[#1f2a1d]">Claimed Team Name</span>
-                          <input className="rounded-xl border border-black/15 bg-white px-3 py-3 text-[#1f2a1d]" value={profileDraftTeam} onChange={(event) => setProfileDraftTeam(event.target.value)} placeholder="Claimed team name (optional)" />
-                          <span>Optional. This helps the commissioner connect your account to the correct team.</span>
-                        </label>
                         <button className="justify-self-start rounded-full bg-[#1a5c3a] px-4 py-2 text-white" onClick={saveProfile}>Save Profile</button>
                         <div className="rounded-2xl border border-black/10 bg-[#f7f2e9] px-4 py-3 text-sm text-[#617061]">
                           {busy || statusMessage}
@@ -3726,7 +3729,7 @@ export default function Page() {
                   </div>
                 ) : null}
 
-                {activeRoomTab === "draft" ? (
+                {currentSession && activeRoomTab === "draft" ? (
                     <div className="rounded-2xl border border-black/10 bg-white/60 p-3">
                     <div className="grid gap-3">
                         <div className="grid gap-2 rounded-xl bg-[#d9eadf] px-3 py-2.5 text-[#1a5c3a] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
@@ -3872,7 +3875,7 @@ export default function Page() {
                 </div>
                   ) : null}
 
-                {activeRoomTab === "results" ? (
+                {currentSession && activeRoomTab === "results" ? (
                   <div className="grid gap-3">
                     <div className="grid items-start gap-2 xl:grid-cols-4">
                       <div className="grid gap-2 md:grid-cols-2 xl:col-span-3 xl:grid-cols-3">
