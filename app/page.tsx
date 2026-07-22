@@ -1087,6 +1087,7 @@ export default function Page() {
   const setupHasField = allPlayers.length > 0;
   const setupHasOdds = Object.keys(displayOddsByPlayer).length > 0;
   const setupReady = setupHasEvent && setupHasTeams && setupHasField;
+  const fieldPending = setupHasEvent && !setupHasField && picks.length === 0;
   const tournamentIdentityLocked = picks.length > 0;
   const tournamentWorkspaceReady = !currentLeagueId || (defaultSessionResolved && (!selectedSessionId || currentSession?.id === selectedSessionId));
   const [draftFlowWidth, setDraftFlowWidth] = useState(0);
@@ -3455,7 +3456,7 @@ export default function Page() {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <h4 className="m-0 font-[Georgia] text-lg">Setup Status</h4>
-                              <div className="mt-1 text-sm text-[#617061]">{setupReady ? "The required tournament details are in place." : "Complete the items marked Needs attention before drafting."}</div>
+                              <div className="mt-1 text-sm text-[#617061]">{setupReady ? "The required tournament details are in place." : fieldPending ? "The tournament is linked, but its player field has not been published yet." : "Complete the items marked Needs attention before drafting."}</div>
                             </div>
                             <span className="text-sm font-semibold text-[#1a5c3a]">{[setupHasEvent, setupHasTeams, setupHasField].filter(Boolean).length}/3 required</span>
                           </div>
@@ -3584,6 +3585,12 @@ export default function Page() {
                             <div><span className="block text-xs">Odds available</span><strong className="text-[#1f2a1d]">{Object.keys(displayOddsByPlayer).length}</strong></div>
                             <div><span className="block text-xs">Field status</span><strong className="text-[#1f2a1d]">{picks.length || currentSession.field_locked_at ? "Locked" : "Editable"}</strong></div>
                           </div>
+                          {fieldPending ? (
+                            <div className="rounded-xl border border-[#c28a24]/30 bg-[#fff6d9] px-4 py-3 text-sm text-[#6a4b12]">
+                              <strong className="block text-[#4f390e]">Field not published yet</strong>
+                              <span>Data Golf and ESPN have not released the player list for {currentSession.event_name ?? currentSession.name}{currentSessionDisplayEvent?.dateLabel ? ` (${currentSessionDisplayEvent.dateLabel})` : ""}. Drafting is disabled until the field becomes available. This page will try again automatically, or a commissioner can use Refresh Field &amp; Odds.</span>
+                            </div>
+                          ) : null}
                           <div className="flex flex-wrap gap-3">
                             <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2.5 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromDataGolf}>Refresh Field & Odds</button>
                             {currentSession.odds_source ? <a className="self-center text-sm text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">View odds source</a> : null}
@@ -3737,6 +3744,8 @@ export default function Page() {
                             <div className="font-semibold leading-tight">
                               {editingPick
                                 ? `Replacing ${editingPick.playerName} on ${editingPick.teamName}. Pick a replacement below.`
+                                : fieldPending
+                                  ? "Field not published yet. Drafting will unlock when the tournament player list becomes available."
                                 : !validDraftOrder
                                   ? "The draft order needs to be repaired before picks can be made."
                                   : draftComplete
@@ -3752,7 +3761,7 @@ export default function Page() {
                           </div>
                           <div className="flex flex-wrap gap-2 lg:justify-end">
                             {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
-                            {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft</button> : null}
+                            {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d] disabled:cursor-not-allowed disabled:opacity-50" disabled={fieldPending} onClick={autoDraftRandomly}>Random Draft</button> : null}
                             {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={undoLastPick}>Undo Pick</button> : null}
                             {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                           </div>
@@ -3763,9 +3772,9 @@ export default function Page() {
                             <h3 className="m-0 font-[Georgia] text-lg">Available Golfers</h3>
                             <span className="rounded-full bg-[#f2eadf] px-2.5 py-0.5 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
-                          <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
+                          <input className="rounded-xl border border-black/15 bg-white px-3 py-2 disabled:cursor-not-allowed disabled:bg-[#f2eadf]" disabled={fieldPending} value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder={fieldPending ? "Waiting for published field" : "Search available golfers"} />
                           <div className="grid max-h-[450px] content-start gap-1 overflow-y-auto overflow-x-hidden rounded-xl border border-black/10 bg-[#f7f2e9]/70 p-1.5">
-                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
+                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : fieldPending ? `Field not published yet for ${currentSession.event_name ?? currentSession.name}. Drafting is disabled until the tournament player list is available.` : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
                               const oddsLabel = playerOddsLabel(player);
                               return (
                                 <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-2.5 py-1.5 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>
