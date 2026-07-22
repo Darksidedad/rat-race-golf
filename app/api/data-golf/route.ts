@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { authorizeProviderApi, forwardedProviderHeaders } from "@/lib/provider-api-auth";
 
 const DATA_GOLF_BASE_URL = "https://feeds.datagolf.com";
 
@@ -541,11 +542,11 @@ async function appLeaderboard(request: NextRequest) {
   if (expectedEventName && !eventNamesMatch(expectedEventName, raw.data?.info?.event_name)) {
     try {
       const season = request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear());
-      const eventsResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=events&season=${encodeURIComponent(season)}`, { cache: "no-store" });
+      const eventsResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=events&season=${encodeURIComponent(season)}`, { cache: "no-store", headers: forwardedProviderHeaders(request) });
       const eventsPayload = await eventsResponse.json() as { ok?: boolean; events?: Array<{ id?: string; name?: string }> };
       const matchingEvent = eventsPayload.events?.find((event) => event.id && eventNamesMatch(expectedEventName, event.name));
       if (eventsPayload.ok && matchingEvent?.id) {
-        const leaderboardResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(matchingEvent.id)}&season=${encodeURIComponent(season)}`, { cache: "no-store" });
+        const leaderboardResponse = await fetch(`${request.nextUrl.origin}/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(matchingEvent.id)}&season=${encodeURIComponent(season)}`, { cache: "no-store", headers: forwardedProviderHeaders(request) });
         const leaderboardPayload = await leaderboardResponse.json() as {
           ok?: boolean;
           eventName?: string;
@@ -674,6 +675,8 @@ async function appLeaderboard(request: NextRequest) {
 }
 
 export async function GET(request: NextRequest) {
+  const access = await authorizeProviderApi(request, "data-golf", 120);
+  if (!access.ok) return access.response;
   const action = request.nextUrl.searchParams.get("action") ?? "";
   if (action === "app-events") return appEvents(request);
   if (action === "app-field") return appField(request);

@@ -104,6 +104,13 @@ const TOUR_OPTIONS = [
   { id: "liv", label: "LIV Golf" },
 ];
 const LIVE_DATA_FETCH_OPTIONS: RequestInit = {};
+
+async function authenticatedApiFetch(input: RequestInfo | URL, init: RequestInit = LIVE_DATA_FETCH_OPTIONS) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = new Headers(init.headers);
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
+  return fetch(input, { ...init, headers });
+}
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",
@@ -1957,7 +1964,7 @@ export default function Page() {
     ]));
     const eventCollections = await Promise.all(tours.flatMap((tour) => seasons.map(async (season) => {
       try {
-        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tour)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+        const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tour)}&season=${season}`);
         const payload = await readJsonResponse<EventsResponse>(response);
         return payload?.ok && payload.events ? payload.events : [];
       } catch (error) {
@@ -2013,7 +2020,7 @@ export default function Page() {
     setEvents([]);
     setNewSessionEventId("");
     try {
-      const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${season}`);
       const payload = await readJsonResponse<EventsResponse>(response);
       if (!payload?.ok || !payload.events) throw new Error(payload?.error ?? "Data Golf did not return events.");
       if (requestId !== eventLoadRequestRef.current) return;
@@ -2038,7 +2045,7 @@ export default function Page() {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
         const seasonQuery = resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession);
-        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`, LIVE_DATA_FETCH_OPTIONS);
+        const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`);
         const payload = await readJsonResponse<EventsResponse>(response);
         if (!payload?.ok || !payload.events) continue;
         const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
@@ -2056,7 +2063,7 @@ export default function Page() {
 
   async function loadOdds(eventName: string, season = CURRENT_GOLF_SEASON) {
     try {
-      const response = await fetch(`/api/data-golf?action=app-odds&tour=${encodeURIComponent(currentSession?.event_tour ?? newDraftTour)}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+      const response = await authenticatedApiFetch(`/api/data-golf?action=app-odds&tour=${encodeURIComponent(currentSession?.event_tour ?? newDraftTour)}&market=win&odds_format=american`);
       const payload = await readJsonResponse<OddsResponse>(response);
       if (!payload?.ok || !payload.odds) {
         setOddsByPlayer({});
@@ -2400,10 +2407,10 @@ export default function Page() {
 
   async function fetchDataGolfFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
     const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
-    let response = await fetch(`/api/data-golf?action=app-field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+    let response = await authenticatedApiFetch(`/api/data-golf?action=app-field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
     let payload = await readJsonResponse<FieldResponse>(response);
     if (!payload?.ok && !eventId.startsWith("dg:")) {
-      response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      response = await authenticatedApiFetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
       payload = await readJsonResponse<FieldResponse>(response);
     }
     if (!payload?.ok || !payload.players?.length) throw new Error(payload?.error || "Data Golf did not return any golfers for that event yet.");
@@ -2413,7 +2420,7 @@ export default function Page() {
     let oddsSource = payload.oddsSource ?? "";
     if (!Object.keys(odds).length && payload.eventName) {
       try {
-        const oddsResponse = await fetch(`/api/data-golf?action=app-odds${tourQuery}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+        const oddsResponse = await authenticatedApiFetch(`/api/data-golf?action=app-odds${tourQuery}&market=win&odds_format=american`);
         const oddsPayload = await readJsonResponse<OddsResponse>(oddsResponse);
         odds = oddsPayload?.ok && oddsPayload.odds ? oddsPayload.odds : {};
         oddsSource = oddsPayload?.source ?? "";
@@ -2615,10 +2622,10 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await authenticatedApiFetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
       let payload = await readJsonResponse<LeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
-        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        response = await authenticatedApiFetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
         payload = await readJsonResponse<LeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.leaderboard) throw new Error(payload?.error ?? "Data Golf did not return leaderboard data.");
@@ -2648,10 +2655,10 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await authenticatedApiFetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
       let payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
-        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        response = await authenticatedApiFetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
         payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.rows) throw new Error(payload?.error ?? "Data Golf did not return tournament leaderboard rows.");

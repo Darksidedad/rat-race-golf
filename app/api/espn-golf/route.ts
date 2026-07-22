@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeProviderApi } from "@/lib/provider-api-auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -983,6 +984,8 @@ async function fetchScoreboardForEvent(eventId: string | null, rawTour: string |
 }
 
 export async function GET(req: NextRequest) {
+  const access = await authorizeProviderApi(req, "espn-golf", 240);
+  if (!access.ok) return access.response;
   const action = req.nextUrl.searchParams.get("action");
   const eventId = req.nextUrl.searchParams.get("eventId");
   const eventNameParam = req.nextUrl.searchParams.get("eventName");

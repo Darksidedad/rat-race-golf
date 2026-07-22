@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { internalProviderHeaders } from "@/lib/provider-api-auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -101,7 +102,7 @@ async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh)
   if (session.event_name && session.event_id.startsWith("dg:")) params.set("eventName", session.event_name);
 
   const route = session.event_id.startsWith("dg:") ? "data-golf" : "espn-golf";
-  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store" });
+  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store", headers: internalProviderHeaders() });
   const payload = (await response.json()) as EspnLeaderboardResponse;
   if (!payload.ok || !payload.leaderboard) {
     throw new Error(payload.error || "Leaderboard response did not include scoring data.");
