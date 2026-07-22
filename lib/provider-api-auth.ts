@@ -72,3 +72,20 @@ export async function authorizeProviderApi(request: NextRequest, route: string, 
 
   return { ok: true, userId: user.id, internal: false };
 }
+
+export async function consumeProviderQuota(provider: string, requestLimit: number) {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return false;
+  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  const { data: allowed, error } = await supabase.rpc("consume_provider_rate_limit", {
+    target_provider: provider,
+    request_limit: requestLimit,
+    window_seconds: 60,
+  });
+  if (error) {
+    console.error("Provider quota check failed", error);
+    return false;
+  }
+  return Boolean(allowed);
+}

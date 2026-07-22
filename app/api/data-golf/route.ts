@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { authorizeProviderApi, forwardedProviderHeaders } from "@/lib/provider-api-auth";
+import { authorizeProviderApi, consumeProviderQuota, forwardedProviderHeaders } from "@/lib/provider-api-auth";
 
 const DATA_GOLF_BASE_URL = "https://feeds.datagolf.com";
 
@@ -345,6 +345,7 @@ async function fetchDataGolf<T>(request: NextRequest, action: string): Promise<D
   if (!endpoint) throw new Error(`Missing Data Golf action: ${action}`);
   const key = dataGolfKey();
   if (!key) throw new Error("Missing DATA_GOLF_API_KEY server environment variable.");
+  if (!await consumeProviderQuota("data-golf", 40)) throw new Error("DATA_GOLF_GLOBAL_RATE_LIMIT");
   const dataGolfUrl = buildDataGolfUrl(request, endpoint, key);
   const response = await fetch(dataGolfUrl, { next: { revalidate: endpoint.cacheSeconds } });
   if (!response.ok) throw new Error(`Data Golf ${action} request failed with ${response.status}.`);
@@ -674,9 +675,7 @@ async function appLeaderboard(request: NextRequest) {
   }, ENDPOINTS["live-predictions"].cacheSeconds);
 }
 
-export async function GET(request: NextRequest) {
-  const access = await authorizeProviderApi(request, "data-golf", 120);
-  if (!access.ok) return access.response;
+async function handleGet(request: NextRequest) {
   const action = request.nextUrl.searchParams.get("action") ?? "";
   if (action === "app-events") return appEvents(request);
   if (action === "app-field") return appField(request);
@@ -709,6 +708,7 @@ export async function GET(request: NextRequest) {
   }
 
   const dataGolfUrl = buildDataGolfUrl(request, endpoint, key);
+  if (!await consumeProviderQuota("data-golf", 40)) throw new Error("DATA_GOLF_GLOBAL_RATE_LIMIT");
   const response = await fetch(dataGolfUrl, {
     next: { revalidate: endpoint.cacheSeconds },
   });
@@ -731,4 +731,20 @@ export async function GET(request: NextRequest) {
     source: `${DATA_GOLF_BASE_URL}${endpoint.path}`,
     data: payload,
   }, endpoint.cacheSeconds);
+}
+
+export async function GET(request: NextRequest) {
+  const access = await authorizeProviderApi(request, "data-golf", 120);
+  if (!access.ok) return access.response;
+  try {
+    return await handleGet(request);
+  } catch (error) {
+    if (error instanceof Error && error.message === "DATA_GOLF_GLOBAL_RATE_LIMIT") {
+      return NextResponse.json(
+        { ok: false, error: "Data Golf is temporarily at its shared request limit. Please wait a minute and try again." },
+        { status: 429, headers: { "Retry-After": "60" } },
+      );
+    }
+    throw error;
+  }
 }
