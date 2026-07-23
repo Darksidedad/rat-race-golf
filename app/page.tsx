@@ -2695,33 +2695,22 @@ export default function Page() {
     const randomPool = shuffled(availablePlayers);
 
     setBusy("Random drafting...");
-    const generatedPicks: Omit<DraftPick, "id" | "created_at">[] = [];
-    for (let offset = 0; offset < remainingPicks; offset += 1) {
-      const overallIndex = picks.length + offset;
-      const roundNumber = Math.floor(overallIndex / assignedTeams.length) + 1;
-      const roundIndex = overallIndex % assignedTeams.length;
-      const team = roundNumber % 2 === 1 ? assignedTeams[roundIndex] : assignedTeams[assignedTeams.length - 1 - roundIndex];
-      const playerName = randomPool[offset];
-      generatedPicks.push({
-        session_id: currentSession.id,
-        team_id: team.id,
-        player_name: playerName,
-        player_key: normalizeName(playerName),
-        pick_number: overallIndex + 1,
-        round_number: roundNumber,
-      });
-    }
-
-    const { error } = await supabase.from("draft_picks").insert(generatedPicks);
+    const selectedPlayers = randomPool.slice(0, remainingPicks);
+    const { data: insertedCount, error } = await supabase.rpc("auto_draft_session", {
+      target_session_id: currentSession.id,
+      player_names: selectedPlayers,
+    });
     if (error) {
       console.error(error);
       setBusy("");
-      setStatusMessage("Could not complete the random draft.");
+      setStatusMessage(error.message || "Could not complete the random draft.");
       return;
     }
 
-    const completed = picks.length + generatedPicks.length >= totalPicks;
-    await updateSession({ status: completed ? "draft_complete" : "drafting" }, `Randomly drafted ${generatedPicks.length} golfers.`);
+    const completed = picks.length + Number(insertedCount ?? 0) >= totalPicks;
+    await loadSessions();
+    await loadSession(currentSession.id, false, false);
+    setStatusMessage(`Randomly drafted ${Number(insertedCount ?? 0)} golfers.`);
     if (completed) setActiveRoomTab("results");
     setPlayerFilter("");
     setHighlightedPlayerIndex(0);
@@ -2829,16 +2818,15 @@ export default function Page() {
     const playerKey = normalizeName(playerName);
     if (draftedKeys.has(playerKey)) return setStatusMessage(`${playerName} has already been drafted.`);
     setBusy("Saving pick...");
-    if (!picks.length && !currentSession.field_locked_at) {
-      const lockResult = await supabase.from("draft_sessions").update({ field_locked_at: new Date().toISOString() }).eq("id", currentSession.id);
-      if (lockResult.error) console.error(lockResult.error);
-    }
-    const insertResult = await supabase.from("draft_picks").insert([{ session_id: currentSession.id, team_id: currentTeamOnClock.id, player_name: playerName, player_key: playerKey, pick_number: picks.length + 1, round_number: currentRound }]);
+    const insertResult = await supabase.rpc("submit_draft_pick", {
+      target_session_id: currentSession.id,
+      target_player_name: playerName,
+    });
     if (insertResult.error) {
       console.error(insertResult.error);
       setBusy("");
       await loadSession(currentSession.id, false, false);
-      return setStatusMessage("Could not save that pick. Refresh if someone else drafted at the same time.");
+      return setStatusMessage(insertResult.error.message || "Could not save that pick. Refresh if someone else drafted at the same time.");
     }
     const isLastPick = picks.length + 1 >= totalPicks;
     setStatusMessage(`${currentTeamOnClock.name} drafted ${playerName}.`);
