@@ -893,34 +893,64 @@ export default function Page() {
     if (!selectedSessionId) return;
     if (!user) return;
     loadSession(selectedSessionId);
+    let hasSubscribed = false;
     const channel = supabase
       .channel(`draft-${selectedSessionId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions", filter: `id=eq.${selectedSessionId}` }, () => { loadSessions(); loadSession(selectedSessionId, false, false); })
       .on("postgres_changes", { event: "*", schema: "public", table: "draft_teams", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
       .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
-      .subscribe();
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        if (hasSubscribed) {
+          void loadSessions();
+          void loadSession(selectedSessionId, false, false);
+        }
+        hasSubscribed = true;
+      });
     return () => { supabase.removeChannel(channel); };
   }, [selectedSessionId, user]);
 
   useEffect(() => {
+    if (!currentLeagueId || !user) return;
+    let hasSubscribed = false;
+    const channel = supabase
+      .channel(`league-sessions-${currentLeagueId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions", filter: `league_id=eq.${currentLeagueId}` }, (payload) => {
+        void loadSessions();
+        const changedSessionId = (payload.new as { id?: string } | null)?.id ?? (payload.old as { id?: string } | null)?.id;
+        if (changedSessionId && changedSessionId === selectedSessionId) {
+          void loadSession(selectedSessionId, false, false);
+        }
+      })
+      .subscribe((status) => {
+        if (status !== "SUBSCRIBED") return;
+        if (hasSubscribed) void loadSessions();
+        hasSubscribed = true;
+      });
+    return () => { supabase.removeChannel(channel); };
+  }, [currentLeagueId, selectedSessionId, user]);
+
+  useEffect(() => {
     if (!selectedSessionId || !user) return;
+    let lastRefreshAt = 0;
 
     const refreshSelectedSession = () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      const now = Date.now();
+      if (now - lastRefreshAt < 2000) return;
+      lastRefreshAt = now;
       void loadSessions();
       void loadSession(selectedSessionId, false, false);
     };
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refreshSelectedSession();
     };
-    const interval = window.setInterval(refreshSelectedSession, 60 * 1000);
-
     window.addEventListener("focus", refreshSelectedSession);
+    window.addEventListener("online", refreshSelectedSession);
     document.addEventListener("visibilitychange", refreshWhenVisible);
 
     return () => {
-      window.clearInterval(interval);
       window.removeEventListener("focus", refreshSelectedSession);
+      window.removeEventListener("online", refreshSelectedSession);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
   }, [selectedSessionId, user]);
