@@ -115,6 +115,18 @@ type DataGolfHistoricalResult = {
   player_name?: string | null;
 };
 
+type DataGolfHistoricalRound = {
+  course_par?: number | string | null;
+  score?: number | string | null;
+};
+
+type DataGolfHistoricalRoundsPlayer = DataGolfHistoricalResult & {
+  round_1?: DataGolfHistoricalRound | null;
+  round_2?: DataGolfHistoricalRound | null;
+  round_3?: DataGolfHistoricalRound | null;
+  round_4?: DataGolfHistoricalRound | null;
+};
+
 type DataGolfPredictionPlayer = {
   current_pos?: string | null;
   current_score?: number | string | null;
@@ -288,6 +300,18 @@ async function fetchHistoricalEvent(request: NextRequest, eventId: string) {
   }>(new NextRequest(historicalUrl), "historical-event-results");
 }
 
+async function fetchHistoricalRounds(request: NextRequest, eventId: string) {
+  const historicalUrl = new URL(request.url);
+  historicalUrl.searchParams.set("action", "historical-raw-rounds");
+  historicalUrl.searchParams.set("event_id", eventId);
+  historicalUrl.searchParams.set("year", request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear()));
+  return fetchDataGolf<{
+    event_id?: number | string;
+    event_name?: string;
+    scores?: DataGolfHistoricalRoundsPlayer[];
+  }>(new NextRequest(historicalUrl), "historical-raw-rounds");
+}
+
 function parseAmericanOdds(value: string | number | null | undefined) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   const cleaned = String(value ?? "").replace(/[^\d+-]/g, "");
@@ -312,6 +336,18 @@ function scoreNumber(value: string | null | undefined) {
   if (value.toUpperCase() === "E") return 0;
   const parsed = Number(value.replace("+", ""));
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function hasMeaningfulLeaderboard(rows: Array<{ position: number | null; total: string | null; thru: string | null }>) {
+  if (!rows.length) return false;
+  const normalized = rows.map((row) => ({
+    position: row.position,
+    total: String(row.total ?? "").trim().toUpperCase(),
+    thru: String(row.thru ?? "").trim().toUpperCase(),
+  }));
+  const hasCompletedPlayer = normalized.some((row) => ["F", "CUT", "WD", "DQ"].includes(row.thru));
+  const distinctResults = new Set(normalized.map((row) => `${row.position ?? ""}|${row.total}|${row.thru}`));
+  return hasCompletedPlayer && distinctResults.size > 1;
 }
 
 function thruLabel(row: DataGolfPredictionPlayer) {
@@ -557,7 +593,12 @@ async function appLeaderboard(request: NextRequest) {
           finalized?: boolean;
           source?: string;
         };
-        if (leaderboardPayload.ok && eventNamesMatch(expectedEventName, leaderboardPayload.eventName) && leaderboardPayload.rows?.length) {
+        if (
+          leaderboardPayload.ok
+          && eventNamesMatch(expectedEventName, leaderboardPayload.eventName)
+          && leaderboardPayload.rows?.length
+          && hasMeaningfulLeaderboard(leaderboardPayload.rows)
+        ) {
           await saveSharedSnapshot(tournamentId, {
             leaderboard: leaderboardPayload.leaderboard ?? {},
             totals: leaderboardPayload.totals ?? {},
@@ -574,8 +615,22 @@ async function appLeaderboard(request: NextRequest) {
     }
 
     try {
-      const historical = await fetchHistoricalEvent(request, requestedEventId);
+      const [historical, historicalRounds] = await Promise.all([
+        fetchHistoricalEvent(request, requestedEventId),
+        fetchHistoricalRounds(request, requestedEventId),
+      ]);
       const historicalEventId = String(historical.data?.event_id ?? "");
+      const roundScoresByName = new Map(
+        (historicalRounds.data?.scores ?? []).map((player) => {
+          const rounds = [player.round_1, player.round_2, player.round_3, player.round_4].filter(Boolean) as DataGolfHistoricalRound[];
+          const totalToPar = rounds.reduce((total, round) => {
+            const score = Number(round.score);
+            const par = Number(round.course_par);
+            return total + (Number.isFinite(score) && Number.isFinite(par) ? score - par : 0);
+          }, 0);
+          return [formatDataGolfPlayerName(player.player_name), rounds.length ? scoreLabel(totalToPar) : null] as const;
+        }),
+      );
       const rows = (historical.data?.event_stats ?? []).map((player) => {
         const name = formatDataGolfPlayerName(player.player_name);
         const finish = String(player.fin_text ?? "").trim().toUpperCase();
@@ -585,12 +640,17 @@ async function appLeaderboard(request: NextRequest) {
           name,
           position,
           positionLabel: finish,
-          total: status,
+          total: roundScoresByName.get(name) ?? null,
           thru: status ?? (position ? "F" : null),
         };
       }).filter((row) => row.name);
 
-      if (historicalEventId === requestedEventId && rows.length) {
+      if (
+        historicalEventId === requestedEventId
+        && String(historicalRounds.data?.event_id ?? "") === requestedEventId
+        && eventNamesMatch(historical.data?.event_name, historicalRounds.data?.event_name)
+        && hasMeaningfulLeaderboard(rows)
+      ) {
         const historicalLeaderboard = Object.fromEntries(rows.map((row) => [row.name, row.position]));
         const historicalTotals = Object.fromEntries(rows.map((row) => [row.name, `${row.total ?? ""}||${row.thru ?? ""}`]));
         await saveSharedSnapshot(tournamentId, {
