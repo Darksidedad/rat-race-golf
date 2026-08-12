@@ -2655,7 +2655,7 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       let payload = await readJsonResponse<LeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
         response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
@@ -2689,7 +2689,7 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
       let payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
         response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
