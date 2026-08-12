@@ -32,6 +32,7 @@ type EspnLeaderboardResponse = {
   totals?: Record<string, string | null>;
   rows?: TournamentLeaderboardRow[];
   finalized?: boolean;
+  notStarted?: boolean;
   error?: string;
 };
 
@@ -146,7 +147,7 @@ export async function GET(request: NextRequest) {
           event_name: payload.eventName ?? session.event_name,
           current_positions: payload.leaderboard,
           current_totals: payload.totals ?? {},
-          status: payload.finalized ? "finalized" : "scored",
+          status: payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored",
         })
         .eq("id", session.id);
 

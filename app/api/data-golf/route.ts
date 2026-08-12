@@ -122,6 +122,11 @@ type DataGolfPredictionPlayer = {
   win?: string | number | null;
 };
 
+function predictionHasStarted(row: DataGolfPredictionPlayer) {
+  const thru = Number(row.thru);
+  return Number.isFinite(thru) && thru > 0;
+}
+
 type DataGolfOddsPlayer = {
   datagolf?: { baseline?: string | number | null; baseline_history_fit?: string | number | null } | null;
   dg_id?: number | string | null;
@@ -319,6 +324,20 @@ async function appField(request: NextRequest) {
 
 async function appLeaderboard(request: NextRequest) {
   const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
+  // Data Golf exposes projected positions and even-par scores before the first
+  // tee time. They are not live results and missing players would appear as WD.
+  if (!(raw.data?.data ?? []).some(predictionHasStarted)) {
+    return cachedJson({
+      ok: true,
+      eventName: raw.data?.info?.event_name,
+      leaderboard: {},
+      totals: {},
+      rows: [],
+      finalized: false,
+      notStarted: true,
+      source: raw.source,
+    }, ENDPOINTS["live-predictions"].cacheSeconds);
+  }
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
   const rows = (raw.data?.data ?? []).map((row) => {
