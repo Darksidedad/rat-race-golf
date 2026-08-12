@@ -141,6 +141,37 @@ function eventNamesMatch(expected: string | null | undefined, actual: string | n
   return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
 }
 
+function teeTimeLabel(player: DataGolfFieldPlayer) {
+  const teeTime = player.teetimes?.find((entry) => Number(entry.round_num) === 1);
+  const match = String(teeTime?.teetime ?? "").match(/\b(\d{1,2}):(\d{2})$/);
+  if (!match) return "Tee time pending";
+  const hour = Number(match[1]);
+  const minute = match[2];
+  const displayHour = hour % 12 || 12;
+  const period = hour >= 12 ? "PM" : "AM";
+  const startingHole = Number(teeTime?.start_hole);
+  return `Tee ${displayHour}:${minute} ${period}${startingHole > 1 ? ` (Hole ${startingHole})` : ""}`;
+}
+
+async function preTournamentLeaderboard(request: NextRequest, expectedEventName: string | null, source: string | undefined) {
+  const field = await fetchDataGolf<{ event_name?: string; field?: DataGolfFieldPlayer[] }>(request, "field");
+  const fieldMatches = !expectedEventName || eventNamesMatch(expectedEventName, field.data?.event_name);
+  const rows = fieldMatches ? (field.data?.field ?? []).map((player) => {
+    const name = formatDataGolfPlayerName(player.player_name);
+    return { name, position: null, positionLabel: "", total: null, thru: teeTimeLabel(player) };
+  }).filter((row) => row.name).sort((a, b) => a.name.localeCompare(b.name)) : [];
+  return cachedJson({
+    ok: true,
+    eventName: expectedEventName ?? field.data?.event_name,
+    leaderboard: Object.fromEntries(rows.map((row) => [row.name, null])),
+    totals: Object.fromEntries(rows.map((row) => [row.name, `||${row.thru}`])),
+    rows,
+    finalized: false,
+    notStarted: true,
+    source: field.source ?? source,
+  }, ENDPOINTS.field.cacheSeconds);
+}
+
 type DataGolfOddsPlayer = {
   datagolf?: { baseline?: string | number | null; baseline_history_fit?: string | number | null } | null;
   dg_id?: number | string | null;
@@ -340,31 +371,12 @@ async function appLeaderboard(request: NextRequest) {
   const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
   const expectedEventName = request.nextUrl.searchParams.get("eventName");
   if (expectedEventName && !eventNamesMatch(expectedEventName, raw.data?.info?.event_name)) {
-    return cachedJson({
-      ok: true,
-      eventName: expectedEventName,
-      leaderboard: {},
-      totals: {},
-      rows: [],
-      finalized: false,
-      notStarted: true,
-      activeEventName: raw.data?.info?.event_name,
-      source: raw.source,
-    }, ENDPOINTS["live-predictions"].cacheSeconds);
+    return preTournamentLeaderboard(request, expectedEventName, raw.source);
   }
   // Data Golf exposes projected positions and even-par scores before the first
   // tee time. They are not live results and missing players would appear as WD.
   if (!(raw.data?.data ?? []).some(predictionHasStarted)) {
-    return cachedJson({
-      ok: true,
-      eventName: raw.data?.info?.event_name,
-      leaderboard: {},
-      totals: {},
-      rows: [],
-      finalized: false,
-      notStarted: true,
-      source: raw.source,
-    }, ENDPOINTS["live-predictions"].cacheSeconds);
+    return preTournamentLeaderboard(request, expectedEventName ?? raw.data?.info?.event_name ?? null, raw.source);
   }
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
