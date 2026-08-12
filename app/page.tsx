@@ -40,7 +40,7 @@ type LeagueMembership = { id: string; league_id: string; user_id: string; role: 
 type NewDraftTeam = { name: string; selected: boolean; ownerUserId: string | null };
 type EventsResponse = { ok: boolean; events?: EventOption[]; error?: string };
 type FieldResponse = { ok: boolean; eventName?: string; players?: string[]; odds?: Record<string, number>; oddsSource?: string; source?: string; error?: string };
-type LeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; error?: string };
+type LeaderboardResponse = { ok: boolean; eventName?: string; leaderboard?: Record<string, number | null>; totals?: Record<string, string | null>; finalized?: boolean; notStarted?: boolean; error?: string };
 type TournamentLeaderboardRow = { name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null };
 type TournamentLeaderboardResponse = LeaderboardResponse & { rows?: TournamentLeaderboardRow[] };
 
@@ -2666,10 +2666,14 @@ export default function Page() {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
         totals: payload.totals ?? {},
-        next_status: payload.finalized ? "finalized" : "scored",
+        next_status: payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored",
       });
       if (error) throw error;
-      setStatusMessage(payload.finalized ? `Saved final leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.` : `Updated leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.`);
+      setStatusMessage(payload.finalized
+        ? `Saved final leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.`
+        : payload.notStarted
+          ? `The leaderboard for ${payload.eventName ?? currentSession.name} will appear after play begins.`
+          : `Updated leaderboard results from Data Golf for ${payload.eventName ?? currentSession.name}.`);
       await loadSessions();
       await loadSession(currentSession.id, false, false);
     } catch (error) {

@@ -141,6 +141,11 @@ type DataGolfPredictionPlayer = {
   win?: string | number | null;
 };
 
+function predictionHasStarted(row: DataGolfPredictionPlayer) {
+  const thru = Number(row.thru);
+  return Number.isFinite(thru) && thru > 0;
+}
+
 type DataGolfOddsPlayer = {
   datagolf?: { baseline?: string | number | null; baseline_history_fit?: string | number | null } | null;
   dg_id?: number | string | null;
@@ -680,6 +685,31 @@ async function appLeaderboard(request: NextRequest) {
       error: `Leaderboard event mismatch: expected ${expectedEventName}, received ${raw.data?.info?.event_name ?? "an unidentified event"}.`,
       eventName: raw.data?.info?.event_name,
     }, { status: 409 });
+  }
+
+  // Data Golf publishes in-play prediction rows before the opening tee time. Those
+  // rows contain projected positions and even-par scores, but they are not a live
+  // leaderboard. Do not persist them: missing field members would also be rendered
+  // as withdrawals by the draft leaderboard.
+  if (!(raw.data?.data ?? []).some(predictionHasStarted)) {
+    await saveSharedSnapshot(tournamentId, {
+      leaderboard: {},
+      totals: {},
+      leaderboard_rows: [],
+      finalized: false,
+      results_source: raw.source ?? null,
+      results_refreshed_at: new Date().toISOString(),
+    });
+    return cachedJson({
+      ok: true,
+      eventName: raw.data?.info?.event_name,
+      leaderboard: {},
+      totals: {},
+      rows: [],
+      finalized: false,
+      notStarted: true,
+      source: raw.source,
+    }, ENDPOINTS["live-predictions"].cacheSeconds);
   }
   const leaderboard: Record<string, number | null> = {};
   const totals: Record<string, string | null> = {};
