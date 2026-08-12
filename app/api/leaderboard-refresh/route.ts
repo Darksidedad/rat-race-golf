@@ -60,8 +60,7 @@ function storedThruFromTotal(value: string | null | undefined) {
 
 function isLiveThru(thru: string | null | undefined) {
   const normalized = String(thru ?? "").trim().toUpperCase();
-  if (!normalized) return false;
-  return !["F", "CUT", "WD", "DQ"].includes(normalized);
+  return /^THRU\s+\d+$/.test(normalized) || normalized.startsWith("PLAYOFF");
 }
 
 function rowsHavePlayersOnCourse(rows: TournamentLeaderboardRow[] | undefined) {
@@ -72,21 +71,42 @@ function totalsHavePlayersOnCourse(totals: Record<string, string | null> | null 
   return Object.values(totals ?? {}).some((value) => isLiveThru(storedThruFromTotal(value)));
 }
 
+function totalsHavePendingTeeTimes(totals: Record<string, string | null> | null | undefined) {
+  return Object.values(totals ?? {}).some((value) => String(storedThruFromTotal(value) ?? "").startsWith("Tee "));
+}
+
 function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number) {
   const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
   return !Number.isFinite(updatedAt) || !updatedAt || now - updatedAt >= OFF_HOURS_REFRESH_MS;
 }
 
+function normalizedEventName(value: string | null | undefined) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\bpresented by\b.*$/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function eventNamesMatch(expected: string | null | undefined, actual: string | null | undefined) {
+  const left = normalizedEventName(expected);
+  const right = normalizedEventName(actual);
+  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
+}
+
 async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh) {
   if (!session.event_id) throw new Error("Missing event id");
+  const isDataGolfEvent = session.event_id.startsWith("dg:");
   const params = new URLSearchParams({
-    action: "leaderboard",
+    action: isDataGolfEvent ? "app-leaderboard" : "leaderboard",
     eventId: session.event_id,
     season: String(session.event_season ?? new Date().getFullYear()),
   });
   if (session.event_tour) params.set("tour", session.event_tour);
+  if (isDataGolfEvent && session.event_name) params.set("eventName", session.event_name);
 
-  const response = await fetch(`${origin}/api/espn-golf?${params.toString()}`, { cache: "no-store" });
+  const route = isDataGolfEvent ? "data-golf" : "espn-golf";
+  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store" });
   const payload = (await response.json()) as EspnLeaderboardResponse;
   if (!payload.ok || !payload.leaderboard) {
     throw new Error(payload.error || "Leaderboard response did not include scoring data.");
@@ -123,7 +143,10 @@ export async function GET(request: NextRequest) {
   const now = Date.now();
   const sessions = ((data ?? []) as DraftSessionForRefresh[]).filter((session) => {
     const hasSavedScores = Object.keys(session.current_positions ?? {}).length > 0;
-    return !hasSavedScores || totalsHavePlayersOnCourse(session.current_totals) || sessionNeedsHourlyRefresh(session, now);
+    return !hasSavedScores
+      || totalsHavePendingTeeTimes(session.current_totals)
+      || totalsHavePlayersOnCourse(session.current_totals)
+      || sessionNeedsHourlyRefresh(session, now);
   });
 
   const results = [];
@@ -133,6 +156,9 @@ export async function GET(request: NextRequest) {
 
     try {
       const payload = await fetchLeaderboard(request.nextUrl.origin, session);
+      if (session.event_name && !eventNamesMatch(session.event_name, payload.eventName)) {
+        throw new Error(`Leaderboard event mismatch: expected ${session.event_name ?? "the selected event"}, received ${payload.eventName ?? "an unidentified event"}.`);
+      }
       const hasPlayersOnCourse = rowsHavePlayersOnCourse(payload.rows);
       const hasNoSavedScores = Object.keys(session.current_positions ?? {}).length === 0;
 

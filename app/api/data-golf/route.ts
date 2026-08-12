@@ -258,6 +258,12 @@ function thruLabel(row: DataGolfPredictionPlayer) {
   return null;
 }
 
+function predictionStatus(row: DataGolfPredictionPlayer) {
+  return [row.current_pos, row.current_score]
+    .map((value) => String(value ?? "").trim().toUpperCase())
+    .find((value) => value === "CUT" || value === "WD" || value === "DQ") ?? null;
+}
+
 function buildDataGolfUrl(request: NextRequest, endpoint: DataGolfEndpoint, key: string) {
   const url = new URL(endpoint.path, DATA_GOLF_BASE_URL);
   const params = request.nextUrl.searchParams;
@@ -382,9 +388,10 @@ async function appLeaderboard(request: NextRequest) {
   const totals: Record<string, string | null> = {};
   const rows = (raw.data?.data ?? []).map((row) => {
     const name = formatDataGolfPlayerName(row.player_name);
-    const position = positionNumber(row.current_pos);
-    const total = scoreLabel(row.current_score);
-    const thru = thruLabel(row);
+    const status = predictionStatus(row);
+    const position = status ? null : positionNumber(row.current_pos);
+    const total = status ?? scoreLabel(row.current_score);
+    const thru = status ?? thruLabel(row);
     if (name) {
       leaderboard[name] = position;
       totals[name] = [total, thru].filter(Boolean).join("||") || null;
@@ -410,7 +417,10 @@ async function appLeaderboard(request: NextRequest) {
     });
 
   const round = Number(raw.data?.info?.current_round);
-  const finalized = Number.isFinite(round) && round >= 4 && rows.length > 0 && rows.every((row) => row.thru === "F");
+  const finalized = Number.isFinite(round)
+    && round >= 4
+    && rows.length > 0
+    && rows.every((row) => ["F", "CUT", "WD", "DQ"].includes(String(row.thru ?? "").toUpperCase()));
 
   return cachedJson({
     ok: true,

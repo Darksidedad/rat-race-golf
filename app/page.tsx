@@ -1031,7 +1031,9 @@ export default function Page() {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
           const savedPosition = lookupLeaderboardValue(pick.player_name, positions) ?? null;
           const savedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          const shouldUseLiveFallback = savedPosition === null && savedTotal === null;
+          const savedThru = parseStoredThru(savedTotal);
+          const hasLivePlayer = tournamentLeaderboardRows.some((row) => normalizeName(row.name) === normalizeName(pick.player_name));
+          const shouldUseLiveFallback = hasLivePlayer && ((savedPosition === null && savedTotal === null) || String(savedThru ?? "").startsWith("Tee "));
           const position = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, livePositions) ?? null : savedPosition;
           const total = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, liveTotals) ?? null : savedTotal;
           const tournamentNotStarted = currentSession?.status === "draft_complete";
@@ -2811,7 +2813,15 @@ export default function Page() {
   async function finalizeResults() {
     if (!canManageLeague) return setStatusMessage("Only the commissioner can finalize tournament results.");
     if (!currentSession) return;
-    if (!Object.keys(currentSession.current_positions ?? {}).length) return setStatusMessage("Refresh the leaderboard or enter final positions before finalizing this tournament.");
+    if (currentSession.status !== "scored") return setStatusMessage("Results can only be finalized after tournament scoring has started.");
+    const positions = normalizeStoredPlayoffPositions(currentSession.current_positions ?? {}, currentSession.current_totals ?? {});
+    const totals = currentSession.current_totals ?? {};
+    const incompletePick = picks.find((pick) => {
+      const position = lookupLeaderboardValue(pick.player_name, positions) ?? null;
+      const storedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
+      return position === null && !isNonScoringResult(parseStoredTotal(storedTotal), parseStoredThru(storedTotal));
+    });
+    if (incompletePick) return setStatusMessage(`Results are incomplete for ${incompletePick.player_name}. Refresh scores or enter a final result before finalizing.`);
     await updateSession({ status: "finalized" }, `Finalized ${currentSession.event_name ?? currentSession.name}. Saved results are now locked.`);
   }
 
