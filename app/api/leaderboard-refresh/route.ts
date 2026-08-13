@@ -39,7 +39,7 @@ type EspnLeaderboardResponse = {
 const ACTIVE_REFRESH_STATUSES = ["draft_complete", "scored"];
 const OFF_HOURS_REFRESH_MS = 60 * 60 * 1000;
 const RECENT_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
-const CRON_SCHEDULE = "*/5 * * * *";
+const CRON_SCHEDULE = "* * * * *";
 
 function isAuthorizedCronRequest(request: NextRequest) {
   const secret = process.env.CRON_SECRET;

@@ -44,4 +44,4 @@ https://www.ratracegolf.com/**
 
 ## Automatic Leaderboard Refresh
 
-The app includes `/api/leaderboard-refresh` for server-side leaderboard updates. Vercel cron invokes it every five minutes. The refresh route deduplicates requests for leagues using the same event and ignores sessions that have not been active within seven days, keeping Data Golf usage well below its published rate limit.
+The app includes `/api/leaderboard-refresh` for server-side leaderboard updates. Vercel cron invokes it every minute during live play. The refresh route deduplicates requests for leagues using the same event, shares the one-minute Data Golf response cache, and ignores sessions that have not been active within seven days. This caps normal live usage at roughly one Data Golf request per minute per active tour.
