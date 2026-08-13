@@ -38,7 +38,9 @@ const ENDPOINTS: Record<string, DataGolfEndpoint> = {
   "live-predictions": {
     path: "/preds/in-play",
     allowedParams: ["tour", "dead_heat", "odds_format", "file_format"],
-    cacheSeconds: 5 * 60,
+    // Share one provider response across all users, but keep manual leaderboard
+    // refreshes close to Data Golf's live feed during tournament play.
+    cacheSeconds: 60,
     defaults: { tour: "pga", dead_heat: "no", odds_format: "american", file_format: "json" },
   },
   "live-stats": {
