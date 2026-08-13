@@ -667,6 +667,7 @@ export default function Page() {
   const [resultPositionEdits, setResultPositionEdits] = useState<Record<string, string>>({});
   const [tournamentLeaderboardOpen, setTournamentLeaderboardOpen] = useState(false);
   const [tournamentLeaderboardRows, setTournamentLeaderboardRows] = useState<TournamentLeaderboardRow[]>([]);
+  const [liveLeaderboardCheckedAt, setLiveLeaderboardCheckedAt] = useState<Date | null>(null);
   const [tournamentLeaderboardLoading, setTournamentLeaderboardLoading] = useState(false);
   const [playerFilter, setPlayerFilter] = useState("");
   const [newTeamName, setNewTeamName] = useState("");
@@ -963,6 +964,10 @@ export default function Page() {
   useEffect(() => {
     if (activeRoomTab !== "results" || !currentSession?.event_id) return;
     void loadTournamentLeaderboard(false);
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadTournamentLeaderboard(false);
+    }, 60 * 1000);
+    return () => window.clearInterval(interval);
   }, [activeRoomTab, currentSession?.event_id, currentSession?.updated_at]);
 
   const assignedTeams = useMemo(() => getAssignedActiveTeams(teams), [teams]);
@@ -1031,11 +1036,10 @@ export default function Page() {
           const playerScores = picks.filter((pick) => pick.team_id === team.id).map((pick) => {
           const savedPosition = lookupLeaderboardValue(pick.player_name, positions) ?? null;
           const savedTotal = lookupLeaderboardValue(pick.player_name, totals) ?? null;
-          const savedThru = parseStoredThru(savedTotal);
           const hasLivePlayer = tournamentLeaderboardRows.some((row) => normalizeName(row.name) === normalizeName(pick.player_name));
-          const shouldUseLiveFallback = hasLivePlayer && ((savedPosition === null && savedTotal === null) || String(savedThru ?? "").startsWith("Tee "));
-          const position = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, livePositions) ?? null : savedPosition;
-          const total = shouldUseLiveFallback ? lookupLeaderboardValue(pick.player_name, liveTotals) ?? null : savedTotal;
+          const shouldUseLiveLeaderboard = hasLivePlayer;
+          const position = shouldUseLiveLeaderboard ? lookupLeaderboardValue(pick.player_name, livePositions) ?? null : savedPosition;
+          const total = shouldUseLiveLeaderboard ? lookupLeaderboardValue(pick.player_name, liveTotals) ?? null : savedTotal;
           const tournamentNotStarted = currentSession?.status === "draft_complete";
           const missingFromLeaderboard = !tournamentNotStarted && (hasSavedLeaderboard || hasLiveLeaderboard) && position === null && total === null;
           const storedTotal = missingFromLeaderboard ? "WD" : parseStoredTotal(total);
@@ -2708,6 +2712,7 @@ export default function Page() {
       }
       if (!payload?.ok || !payload.rows) throw new Error(payload?.error ?? "Data Golf did not return tournament leaderboard rows.");
       setTournamentLeaderboardRows(payload.rows);
+      setLiveLeaderboardCheckedAt(new Date());
     } catch (error) {
       console.error(error);
       setTournamentLeaderboardRows([]);
@@ -3429,7 +3434,7 @@ export default function Page() {
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                   </div>
-                  {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">Scores last changed {resultsUpdatedLabel}</div> : null}
+                  {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">{liveLeaderboardCheckedAt ? `Live scores checked ${liveLeaderboardCheckedAt.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : `Saved scores last changed ${resultsUpdatedLabel}`}</div> : null}
                 </div>
               ) : <div />}
               <div className="flex flex-wrap justify-end gap-2 xl:justify-self-end">
