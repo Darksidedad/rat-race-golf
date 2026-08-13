@@ -90,7 +90,7 @@ const TOUR_OPTIONS = [
   { id: "champions", label: "PGA TOUR Champions" },
   { id: "liv", label: "LIV Golf" },
 ];
-const LIVE_DATA_FETCH_OPTIONS: RequestInit = {};
+const LIVE_DATA_FETCH_OPTIONS: RequestInit = { cache: "no-store" };
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",

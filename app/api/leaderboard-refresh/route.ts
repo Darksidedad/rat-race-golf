@@ -144,7 +144,12 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     console.error(error);
-    return NextResponse.json({ ok: false, error: "Could not load sessions to refresh." }, { status: 500 });
+    return NextResponse.json({
+      ok: false,
+      error: "Could not load sessions to refresh.",
+      code: error.code ?? null,
+      detail: error.message ?? null,
+    }, { status: 500 });
   }
 
   const now = Date.now();
