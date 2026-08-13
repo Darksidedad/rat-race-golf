@@ -434,7 +434,7 @@ function resultStatusLabel(position: number | null, total: string | null | undef
   const playoff = playoffLabel(meta);
   if (position) return `${`P${position}`}${playoff ? ` - ${playoff}` : normalizedThru ? ` - ${normalizedThru}` : ""}`;
   if (!total && !normalizedThru && !playoff) return "WD";
-  return playoff ?? normalizedThru ?? "CUT / no finish";
+  return playoff ?? normalizedThru ?? "Not started";
 }
 
 function formatProfileLabel(username: string, teamName: string | null | undefined) {
@@ -1040,10 +1040,12 @@ export default function Page() {
           const shouldUseLiveLeaderboard = hasLivePlayer;
           const position = shouldUseLiveLeaderboard ? lookupLeaderboardValue(pick.player_name, livePositions) ?? null : savedPosition;
           const total = shouldUseLiveLeaderboard ? lookupLeaderboardValue(pick.player_name, liveTotals) ?? null : savedTotal;
+          const liveThru = parseStoredThru(total);
+          const savedTeeTime = String(parseStoredThru(savedTotal) ?? "").startsWith("Tee ") ? parseStoredThru(savedTotal) : null;
           const tournamentNotStarted = currentSession?.status === "draft_complete";
           const missingFromLeaderboard = !tournamentNotStarted && (hasSavedLeaderboard || hasLiveLeaderboard) && position === null && total === null;
           const storedTotal = missingFromLeaderboard ? "WD" : parseStoredTotal(total);
-          const storedThru = missingFromLeaderboard ? "WD" : parseStoredThru(total) ?? (tournamentNotStarted ? "Tee time pending" : null);
+          const storedThru = missingFromLeaderboard ? "WD" : liveThru ?? savedTeeTime ?? (tournamentNotStarted ? "Tee time pending" : null);
           const normalizedResult = normalizeLegacyNonScoringResult(position, storedTotal, storedThru);
           const displayTotal = normalizedResult.total;
           const thru = normalizedResult.thru;
