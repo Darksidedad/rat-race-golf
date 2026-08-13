@@ -2665,11 +2665,19 @@ export default function Page() {
         payload = await readJsonResponse<LeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.leaderboard) throw new Error(payload?.error ?? "Data Golf did not return leaderboard data.");
+      const nextStatus = payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored";
+      const positionsUnchanged = JSON.stringify(Object.entries(currentSession.current_positions ?? {}).sort()) === JSON.stringify(Object.entries(payload.leaderboard).sort());
+      const totalsUnchanged = JSON.stringify(Object.entries(currentSession.current_totals ?? {}).sort()) === JSON.stringify(Object.entries(payload.totals ?? {}).sort());
+      if (positionsUnchanged && totalsUnchanged && currentSession.status === nextStatus) {
+        setStatusMessage(`Scores are current for ${payload.eventName ?? currentSession.name}. No leaderboard changes were found.`);
+        setBusy("");
+        return;
+      }
       const { error } = await supabase.rpc("refresh_session_leaderboard", {
         target_session_id: currentSession.id,
         leaderboard: payload.leaderboard,
         totals: payload.totals ?? {},
-        next_status: payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored",
+        next_status: nextStatus,
       });
       if (error) throw error;
       setStatusMessage(payload.finalized
@@ -3421,7 +3429,7 @@ export default function Page() {
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "draft" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("draft")}>Draft</button>
                     <button className={`rounded-full px-3 py-1.5 text-sm ${activeRoomTab === "results" ? "bg-[#1a5c3a] text-white" : "border border-[#1a5c3a]/20 bg-white text-[#1a5c3a]"}`} onClick={() => setActiveRoomTab("results")}>Results</button>
                   </div>
-                  {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">Leaderboard updated {resultsUpdatedLabel}</div> : null}
+                  {activeRoomTab === "results" ? <div className="text-xs font-medium text-[#1a5c3a]">Scores last changed {resultsUpdatedLabel}</div> : null}
                 </div>
               ) : <div />}
               <div className="flex flex-wrap justify-end gap-2 xl:justify-self-end">

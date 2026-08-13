@@ -101,6 +101,12 @@ function eventNamesMatch(expected: string | null | undefined, actual: string | n
   return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
 }
 
+function recordsMatch<T>(left: Record<string, T> | null | undefined, right: Record<string, T> | null | undefined) {
+  const leftEntries = Object.entries(left ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const rightEntries = Object.entries(right ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+}
+
 async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh) {
   if (!session.event_id) throw new Error("Missing event id");
   const isDataGolfEvent = session.event_id.startsWith("dg:");
@@ -191,9 +197,17 @@ export async function GET(request: NextRequest) {
       }
       const hasPlayersOnCourse = rowsHavePlayersOnCourse(payload.rows);
       const hasNoSavedScores = Object.keys(session.current_positions ?? {}).length === 0;
+      const nextStatus = payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored";
 
       if (!hasPlayersOnCourse && !hadPlayersOnCourse && !needsHourlyRefresh && !hasNoSavedScores) {
         results.push({ sessionId: session.id, refreshed: false, reason: "throttled" });
+        continue;
+      }
+
+      if (recordsMatch(session.current_positions, payload.leaderboard)
+        && recordsMatch(session.current_totals, payload.totals ?? {})
+        && session.status === nextStatus) {
+        results.push({ sessionId: session.id, refreshed: false, reason: "unchanged", playersOnCourse: hasPlayersOnCourse });
         continue;
       }
 
@@ -203,7 +217,7 @@ export async function GET(request: NextRequest) {
           event_name: payload.eventName ?? session.event_name,
           current_positions: payload.leaderboard,
           current_totals: payload.totals ?? {},
-          status: payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored",
+          status: nextStatus,
         })
         .eq("id", session.id);
 
