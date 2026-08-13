@@ -38,6 +38,7 @@ type EspnLeaderboardResponse = {
 
 const ACTIVE_REFRESH_STATUSES = ["draft_complete", "scored"];
 const OFF_HOURS_REFRESH_MS = 60 * 60 * 1000;
+const RECENT_SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const CRON_SCHEDULE = "*/5 * * * *";
 
 function isAuthorizedCronRequest(request: NextRequest) {
@@ -77,7 +78,13 @@ function totalsHavePendingTeeTimes(totals: Record<string, string | null> | null 
 
 function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number) {
   const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
-  return !Number.isFinite(updatedAt) || !updatedAt || now - updatedAt >= OFF_HOURS_REFRESH_MS;
+  const age = now - updatedAt;
+  return Number.isFinite(updatedAt) && updatedAt > 0 && age >= OFF_HOURS_REFRESH_MS && age <= RECENT_SESSION_MS;
+}
+
+function sessionWasRecentlyActive(session: DraftSessionForRefresh, now: number) {
+  const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
+  return Number.isFinite(updatedAt) && updatedAt > 0 && now - updatedAt <= RECENT_SESSION_MS;
 }
 
 function normalizedEventName(value: string | null | undefined) {
@@ -142,6 +149,7 @@ export async function GET(request: NextRequest) {
 
   const now = Date.now();
   const sessions = ((data ?? []) as DraftSessionForRefresh[]).filter((session) => {
+    if (!sessionWasRecentlyActive(session, now)) return false;
     const hasSavedScores = Object.keys(session.current_positions ?? {}).length > 0;
     return !hasSavedScores
       || totalsHavePendingTeeTimes(session.current_totals)
@@ -150,12 +158,19 @@ export async function GET(request: NextRequest) {
   });
 
   const results = [];
+  const leaderboardRequests = new Map<string, Promise<EspnLeaderboardResponse>>();
   for (const session of sessions) {
     const hadPlayersOnCourse = totalsHavePlayersOnCourse(session.current_totals);
     const needsHourlyRefresh = sessionNeedsHourlyRefresh(session, now);
 
     try {
-      const payload = await fetchLeaderboard(request.nextUrl.origin, session);
+      const requestKey = [session.event_id, session.event_tour, session.event_season, session.event_name].join("|");
+      let leaderboardRequest = leaderboardRequests.get(requestKey);
+      if (!leaderboardRequest) {
+        leaderboardRequest = fetchLeaderboard(request.nextUrl.origin, session);
+        leaderboardRequests.set(requestKey, leaderboardRequest);
+      }
+      const payload = await leaderboardRequest;
       if (session.event_name && !eventNamesMatch(session.event_name, payload.eventName)) {
         throw new Error(`Leaderboard event mismatch: expected ${session.event_name ?? "the selected event"}, received ${payload.eventName ?? "an unidentified event"}.`);
       }
