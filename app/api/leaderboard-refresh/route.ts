@@ -136,11 +136,21 @@ export async function GET(request: NextRequest) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  const { data, error } = await supabase
+  let sessionsResult = await supabase
     .from("draft_sessions")
     .select("id,event_id,event_tour,event_season,event_name,status,current_positions,current_totals,updated_at")
     .not("event_id", "is", null)
     .in("status", ACTIVE_REFRESH_STATUSES);
+
+  if (sessionsResult.error?.code === "42703") {
+    sessionsResult = await supabase
+      .from("draft_sessions")
+      .select("id,event_id,event_name,status,current_positions,current_totals,updated_at")
+      .not("event_id", "is", null)
+      .in("status", ACTIVE_REFRESH_STATUSES) as typeof sessionsResult;
+  }
+
+  const { data, error } = sessionsResult;
 
   if (error) {
     console.error(error);
