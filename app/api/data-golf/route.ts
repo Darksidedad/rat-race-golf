@@ -1,6 +1,68 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { authorizeProviderApi, consumeProviderQuota, privateProviderResponse } from "@/lib/provider-api-auth";
+import { historicalResultsCanFinalize, roundTotalToPar, type HistoricalRound } from "@/lib/completed-results";
 
 const DATA_GOLF_BASE_URL = "https://feeds.datagolf.com";
+
+function catalogClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
+
+async function ensureCatalogTournament(event: {
+  id: string;
+  name: string;
+  season: number;
+  startDate?: string;
+  location?: string;
+  course?: string;
+}, tour: string) {
+  const client = catalogClient();
+  if (!client) return null;
+  const { data, error } = await client.from("tournament_catalog").upsert({
+    provider: "data-golf",
+    provider_event_id: event.id,
+    tour,
+    season: event.season,
+    name: event.name,
+    start_date: event.startDate ?? null,
+    location: event.location ?? null,
+    course: event.course ?? null,
+  }, { onConflict: "provider,provider_event_id" }).select("id").single();
+  if (error) {
+    console.error("Tournament catalog upsert failed", error);
+    return null;
+  }
+  return data.id as string;
+}
+
+async function saveCompletedSnapshot(tournamentId: string | null, payload: {
+  leaderboard: Record<string, number | null>;
+  totals: Record<string, string | null>;
+  rows: Array<{ name: string; position: number | null; positionLabel: string; total: string | null; thru: string | null }>;
+  source?: string;
+}) {
+  const client = catalogClient();
+  if (!client || !tournamentId) return;
+  const { error } = await client.from("tournament_snapshots").upsert({
+    tournament_id: tournamentId,
+    leaderboard: payload.leaderboard,
+    totals: payload.totals,
+    leaderboard_rows: payload.rows,
+    finalized: true,
+    results_source: payload.source ?? null,
+    results_refreshed_at: new Date().toISOString(),
+  }, { onConflict: "tournament_id" });
+  if (error) {
+    console.error("Completed tournament snapshot save failed", error);
+    return;
+  }
+  const { error: statusError } = await client.from("tournament_catalog").update({ status: "completed" }).eq("id", tournamentId);
+  if (statusError) console.error("Completed tournament catalog update failed", statusError);
+}
 
 type DataGolfEndpoint = {
   path: string;
@@ -108,6 +170,18 @@ type DataGolfFieldPlayer = {
   dg_rank?: number | string | null;
   owgr_rank?: number | string | null;
   teetimes?: Array<{ round_num?: number | string | null; teetime?: string | null; start_hole?: number | string | null; wave?: string | null }>;
+};
+
+type DataGolfHistoricalResult = {
+  fin_text?: string | number | null;
+  player_name?: string | null;
+};
+
+type DataGolfHistoricalRoundsPlayer = DataGolfHistoricalResult & {
+  round_1?: HistoricalRound | null;
+  round_2?: HistoricalRound | null;
+  round_3?: HistoricalRound | null;
+  round_4?: HistoricalRound | null;
 };
 
 type DataGolfPredictionPlayer = {
@@ -289,6 +363,7 @@ async function fetchDataGolf<T>(request: NextRequest, action: string): Promise<D
   if (!endpoint) throw new Error(`Missing Data Golf action: ${action}`);
   const key = dataGolfKey();
   if (!key) throw new Error("Missing DATA_GOLF_API_KEY server environment variable.");
+  if (!await consumeProviderQuota("data-golf", 40)) throw new Error("DATA_GOLF_GLOBAL_RATE_LIMIT");
   const dataGolfUrl = buildDataGolfUrl(request, endpoint, key);
   const response = await fetch(dataGolfUrl, { next: { revalidate: endpoint.cacheSeconds } });
   if (!response.ok) throw new Error(`Data Golf ${action} request failed with ${response.status}.`);
@@ -300,7 +375,7 @@ async function appEvents(request: NextRequest) {
   const tour = normalizeTour(request.nextUrl.searchParams.get("tour"));
   const season = request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear());
   const raw = await fetchDataGolf<{ schedule?: DataGolfScheduleEvent[] }>(request, "schedule");
-  const events = (raw.data?.schedule ?? [])
+  const eventRows = (raw.data?.schedule ?? [])
     .filter((event) => event.event_id !== null && event.event_id !== undefined && event.event_name)
     .filter((event) => !event.tour || normalizeTour(event.tour) === tour)
     .map((event) => ({
@@ -312,6 +387,10 @@ async function appEvents(request: NextRequest) {
       location: event.location ?? undefined,
       course: event.course ?? undefined,
     }));
+  const events = await Promise.all(eventRows.map(async (event) => ({
+    ...event,
+    catalogId: await ensureCatalogTournament(event, tour),
+  })));
 
   return cachedJson({ ok: true, tour, events }, ENDPOINTS.schedule.cacheSeconds);
 }
@@ -376,10 +455,25 @@ async function appField(request: NextRequest) {
 }
 
 async function appLeaderboard(request: NextRequest) {
-  const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
+  const requestedEventId = parseDataGolfEventId(request.nextUrl.searchParams.get("eventId"));
+  const raw = await fetchDataGolf<{ data?: DataGolfPredictionPlayer[]; info?: { event_id?: number | string; event_name?: string; current_round?: number | string; last_update?: string } }>(request, "live-predictions");
   const expectedEventName = request.nextUrl.searchParams.get("eventName");
-  if (expectedEventName && !eventNamesMatch(expectedEventName, raw.data?.info?.event_name)) {
-    return preTournamentLeaderboard(request, expectedEventName, raw.source);
+  const activeEventId = String(raw.data?.info?.event_id ?? "").trim();
+  const eventIdMismatch = Boolean(requestedEventId && activeEventId && requestedEventId !== activeEventId);
+  const eventNameMismatch = Boolean(expectedEventName && !eventNamesMatch(expectedEventName, raw.data?.info?.event_name));
+  if (eventIdMismatch || eventNameMismatch) {
+    try {
+      const historical = await completedHistoricalLeaderboard(request, requestedEventId, expectedEventName);
+      if (historical) return cachedJson(historical, ENDPOINTS["historical-event-results"].cacheSeconds);
+    } catch (error) {
+      console.error("Historical leaderboard fallback failed", error);
+    }
+    return NextResponse.json({
+      ok: false,
+      error: `Data Golf leaderboard updates are currently for ${raw.data?.info?.event_name ?? "the active event"} only, and no verified completed results were available.`,
+      activeEventId,
+      eventName: raw.data?.info?.event_name,
+    }, { status: 409 });
   }
   // Data Golf exposes projected positions and even-par scores before the first
   // tee time. They are not live results and missing players would appear as WD.
@@ -435,7 +529,7 @@ async function appLeaderboard(request: NextRequest) {
   }, ENDPOINTS["live-predictions"].cacheSeconds);
 }
 
-export async function GET(request: NextRequest) {
+async function handleGet(request: NextRequest) {
   const action = request.nextUrl.searchParams.get("action") ?? "";
   if (action === "app-events") return appEvents(request);
   if (action === "app-field") return appField(request);
@@ -468,6 +562,7 @@ export async function GET(request: NextRequest) {
   }
 
   const dataGolfUrl = buildDataGolfUrl(request, endpoint, key);
+  if (!await consumeProviderQuota("data-golf", 40)) throw new Error("DATA_GOLF_GLOBAL_RATE_LIMIT");
   const response = await fetch(dataGolfUrl, {
     next: { revalidate: endpoint.cacheSeconds },
   });
@@ -490,4 +585,91 @@ export async function GET(request: NextRequest) {
     source: `${DATA_GOLF_BASE_URL}${endpoint.path}`,
     data: payload,
   }, endpoint.cacheSeconds);
+}
+
+async function fetchHistoricalEvent(request: NextRequest, eventId: string) {
+  const historicalUrl = new URL(request.url);
+  historicalUrl.searchParams.set("action", "historical-event-results");
+  historicalUrl.searchParams.set("event_id", eventId);
+  historicalUrl.searchParams.set("year", request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear()));
+  return fetchDataGolf<{ event_id?: number | string; event_name?: string; event_stats?: DataGolfHistoricalResult[] }>(
+    new NextRequest(historicalUrl),
+    "historical-event-results",
+  );
+}
+
+async function fetchHistoricalRounds(request: NextRequest, eventId: string) {
+  const historicalUrl = new URL(request.url);
+  historicalUrl.searchParams.set("action", "historical-raw-rounds");
+  historicalUrl.searchParams.set("event_id", eventId);
+  historicalUrl.searchParams.set("year", request.nextUrl.searchParams.get("season") ?? String(new Date().getFullYear()));
+  return fetchDataGolf<{ event_id?: number | string; event_name?: string; scores?: DataGolfHistoricalRoundsPlayer[] }>(
+    new NextRequest(historicalUrl),
+    "historical-raw-rounds",
+  );
+}
+
+async function completedHistoricalLeaderboard(request: NextRequest, requestedEventId: string, expectedEventName: string | null) {
+  if (!requestedEventId) return null;
+  const [historical, historicalRounds] = await Promise.all([
+    fetchHistoricalEvent(request, requestedEventId),
+    fetchHistoricalRounds(request, requestedEventId),
+  ]);
+  const roundResultsByName = new Map((historicalRounds.data?.scores ?? []).map((player) => {
+    const rounds = [player.round_1, player.round_2, player.round_3, player.round_4];
+    const total = roundTotalToPar(rounds);
+    return [formatDataGolfPlayerName(player.player_name), { total, roundCount: rounds.filter(Boolean).length }] as const;
+  }));
+  const rows = (historical.data?.event_stats ?? []).map((player) => {
+    const name = formatDataGolfPlayerName(player.player_name);
+    const finish = String(player.fin_text ?? "").trim().toUpperCase();
+    const status = ["CUT", "WD", "DQ"].includes(finish) ? finish : null;
+    const position = status ? null : positionNumber(finish);
+    const roundResult = roundResultsByName.get(name);
+    const hasRequiredRounds = position ? roundResult?.roundCount === 4 : status === "CUT" ? (roundResult?.roundCount ?? 0) >= 2 : true;
+    const total = hasRequiredRounds && roundResult?.total !== null && roundResult?.total !== undefined ? scoreLabel(roundResult.total) : null;
+    return { name, position, positionLabel: finish, total, thru: status ?? (position ? "F" : null) };
+  }).filter((row) => row.name);
+
+  if (!historicalResultsCanFinalize({
+    requestedEventId,
+    resultsEventId: historical.data?.event_id,
+    roundsEventId: historicalRounds.data?.event_id,
+    resultsEventName: historical.data?.event_name,
+    roundsEventName: historicalRounds.data?.event_name,
+    expectedEventName,
+    rows,
+  })) return null;
+
+  const payload = {
+    ok: true,
+    eventName: historical.data?.event_name,
+    leaderboard: Object.fromEntries(rows.map((row) => [row.name, row.position])),
+    totals: Object.fromEntries(rows.map((row) => [row.name, `${row.total ?? ""}||${row.thru ?? ""}`])),
+    rows,
+    finalized: true,
+    source: historical.source,
+  };
+  const tour = normalizeTour(request.nextUrl.searchParams.get("tour"));
+  const season = Number(request.nextUrl.searchParams.get("season") ?? new Date().getFullYear());
+  const providerEventId = formatDataGolfEventId(tour, season, requestedEventId);
+  const tournamentId = await ensureCatalogTournament({ id: providerEventId, name: historical.data?.event_name ?? expectedEventName ?? providerEventId, season }, tour);
+  await saveCompletedSnapshot(tournamentId, payload);
+  return payload;
+}
+
+export async function GET(request: NextRequest) {
+  const access = await authorizeProviderApi(request, "data-golf", 120);
+  if (!access.ok) return privateProviderResponse(access.response);
+  try {
+    return privateProviderResponse(await handleGet(request));
+  } catch (error) {
+    if (error instanceof Error && error.message === "DATA_GOLF_GLOBAL_RATE_LIMIT") {
+      return privateProviderResponse(NextResponse.json(
+        { ok: false, error: "Data Golf is temporarily at its shared request limit. Please wait a minute and try again." },
+        { status: 429, headers: { "Retry-After": "60" } },
+      ));
+    }
+    throw error;
+  }
 }

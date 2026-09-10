@@ -5,8 +5,9 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import type { User } from "@supabase/supabase-js";
 import Image from "next/image";
 import { supabase } from "@/lib/supabase";
+import { changedLeagueId, changedSessionId, shouldReconcileAfterSubscribe, shouldRunClientRefresh } from "@/lib/refresh-reconciliation";
 
-type EventOption = { id: string; name: string; season: number; startDate?: string; dateLabel?: string; location?: string; course?: string };
+type EventOption = { id: string; catalogId?: string | null; name: string; season: number; startDate?: string; dateLabel?: string; location?: string; course?: string };
 type DraftSession = {
   id: string;
   league_id: string | null;
@@ -15,6 +16,7 @@ type DraftSession = {
   counts_for_season: boolean;
   name: string;
   event_id: string | null;
+  tournament_id?: string | null;
   event_name: string | null;
   player_input: string;
   field_source?: string | null;
@@ -91,6 +93,13 @@ const TOUR_OPTIONS = [
   { id: "liv", label: "LIV Golf" },
 ];
 const LIVE_DATA_FETCH_OPTIONS: RequestInit = { cache: "no-store" };
+
+async function authenticatedApiFetch(input: RequestInfo | URL, init: RequestInit = LIVE_DATA_FETCH_OPTIONS) {
+  const { data: { session } } = await supabase.auth.getSession();
+  const headers = new Headers(init.headers);
+  if (session?.access_token) headers.set("Authorization", `Bearer ${session.access_token}`);
+  return fetch(input, { ...init, headers });
+}
 const INVALID_PLAYER_TERMS = [
   "driving",
   "distance",
@@ -630,6 +639,9 @@ export default function Page() {
   const draftFlowRef = useRef<HTMLDivElement | null>(null);
   const sessionDateLoadRequestRef = useRef(0);
   const eventLoadRequestRef = useRef(0);
+  const sessionListLoadRequestRef = useRef(0);
+  const sessionLoadRequestRef = useRef(0);
+  const clientRefreshAtRef = useRef<Record<string, number>>({});
   const [sessions, setSessions] = useState<DraftSession[]>([]);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -833,6 +845,8 @@ export default function Page() {
 
 
   useEffect(() => {
+    sessionListLoadRequestRef.current += 1;
+    sessionLoadRequestRef.current += 1;
     setSelectedSessionId("");
     setCurrentSession(null);
     setTeams([]);
@@ -875,37 +889,56 @@ export default function Page() {
     if (!selectedSessionId) return;
     if (!user) return;
     loadSession(selectedSessionId);
+    let hasSubscribed = false;
     const channel = supabase
       .channel(`draft-${selectedSessionId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions", filter: `id=eq.${selectedSessionId}` }, () => { loadSessions(); loadSession(selectedSessionId, false, false); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_teams", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
-      .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => loadSession(selectedSessionId, false, false))
-      .subscribe();
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_teams", filter: `session_id=eq.${selectedSessionId}` }, () => reconcileSelectedSession(selectedSessionId))
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_picks", filter: `session_id=eq.${selectedSessionId}` }, () => reconcileSelectedSession(selectedSessionId))
+      .subscribe((status) => {
+        if (shouldReconcileAfterSubscribe(status, hasSubscribed)) reconcileLeagueAndSession(currentLeagueId, selectedSessionId);
+        if (status === "SUBSCRIBED") hasSubscribed = true;
+      });
     return () => { supabase.removeChannel(channel); };
-  }, [selectedSessionId, user]);
+  }, [currentLeagueId, selectedSessionId, user]);
+
+  useEffect(() => {
+    if (!currentLeagueId || !user) return;
+    let hasSubscribed = false;
+    const channel = supabase
+      .channel(`league-sessions-${currentLeagueId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "draft_sessions" }, (payload) => {
+        const leagueId = changedLeagueId(payload);
+        if (leagueId && leagueId !== currentLeagueId) return;
+        const sessionId = changedSessionId(payload);
+        reconcileLeagueAndSession(currentLeagueId, sessionId === selectedSessionId ? selectedSessionId : undefined);
+      })
+      .subscribe((status) => {
+        if (shouldReconcileAfterSubscribe(status, hasSubscribed)) reconcileLeagueAndSession(currentLeagueId, selectedSessionId);
+        if (status === "SUBSCRIBED") hasSubscribed = true;
+      });
+    return () => { supabase.removeChannel(channel); };
+  }, [currentLeagueId, selectedSessionId, user]);
 
   useEffect(() => {
     if (!selectedSessionId || !user) return;
 
-    const refreshSelectedSession = () => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      void loadSessions();
-      void loadSession(selectedSessionId, false, false);
-    };
+    const refreshSelectedSession = () => reconcileLeagueAndSession(currentLeagueId, selectedSessionId);
     const refreshWhenVisible = () => {
       if (document.visibilityState === "visible") refreshSelectedSession();
     };
     const interval = window.setInterval(refreshSelectedSession, 60 * 1000);
 
     window.addEventListener("focus", refreshSelectedSession);
+    window.addEventListener("online", refreshSelectedSession);
     document.addEventListener("visibilitychange", refreshWhenVisible);
 
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", refreshSelectedSession);
+      window.removeEventListener("online", refreshSelectedSession);
       document.removeEventListener("visibilitychange", refreshWhenVisible);
     };
-  }, [selectedSessionId, user]);
+  }, [currentLeagueId, selectedSessionId, user]);
 
   useEffect(() => {
     setPlayerPoolDraft(currentSession?.player_input ?? "");
@@ -1081,6 +1114,7 @@ export default function Page() {
   const setupHasField = allPlayers.length > 0;
   const setupHasOdds = Object.keys(displayOddsByPlayer).length > 0;
   const setupReady = setupHasEvent && setupHasTeams && setupHasField;
+  const fieldPending = setupHasEvent && !setupHasField && picks.length === 0;
   const tournamentIdentityLocked = picks.length > 0;
   const tournamentWorkspaceReady = !currentLeagueId || (defaultSessionResolved && (!selectedSessionId || currentSession?.id === selectedSessionId));
   const activeTeamName = currentMembership?.claimed_team_name ?? profile?.team_name ?? null;
@@ -1973,7 +2007,10 @@ export default function Page() {
       setSessionsLoaded(true);
       return;
     }
-    const { data, error } = await supabase.from("draft_sessions").select("*").eq("league_id", currentLeagueId).order("created_at", { ascending: false });
+    const leagueId = currentLeagueId;
+    const requestId = ++sessionListLoadRequestRef.current;
+    const { data, error } = await supabase.from("draft_sessions").select("*").eq("league_id", leagueId).order("created_at", { ascending: false });
+    if (requestId !== sessionListLoadRequestRef.current) return;
     if (error) {
       console.error(error);
       setStatusMessage("Could not load tournament sessions from Supabase.");
@@ -1982,6 +2019,28 @@ export default function Page() {
     }
     setSessions((data ?? []) as DraftSession[]);
     setSessionsLoaded(true);
+  }
+
+  function clientRefreshAllowed(key: string) {
+    const now = Date.now();
+    const allowed = shouldRunClientRefresh({
+      isVisible: typeof document === "undefined" || document.visibilityState === "visible",
+      now,
+      lastRefreshAt: clientRefreshAtRef.current[key],
+    });
+    if (allowed) clientRefreshAtRef.current[key] = now;
+    return allowed;
+  }
+
+  function reconcileSelectedSession(sessionId: string) {
+    if (!sessionId || sessionId !== selectedSessionId || !clientRefreshAllowed(`session:${sessionId}`)) return;
+    void loadSession(sessionId, false, false);
+  }
+
+  function reconcileLeagueAndSession(leagueId: string, sessionId?: string) {
+    if (!leagueId || leagueId !== currentLeagueId) return;
+    if (clientRefreshAllowed(`league:${leagueId}`)) void loadSessions();
+    if (sessionId) reconcileSelectedSession(sessionId);
   }
 
   async function loadSessionEventDates(sessionList: DraftSession[]) {
@@ -1993,7 +2052,7 @@ export default function Page() {
     ]));
     const eventCollections = await Promise.all(tours.flatMap((tour) => seasons.map(async (season) => {
       try {
-        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tour)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+        const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tour)}&season=${season}`);
         const payload = await readJsonResponse<EventsResponse>(response);
         return payload?.ok && payload.events ? payload.events : [];
       } catch (error) {
@@ -2018,12 +2077,21 @@ export default function Page() {
   }
 
   async function loadSession(sessionId: string, setLoading = true, syncTab = true) {
+    if (!currentLeagueId) {
+      setCurrentSession(null);
+      setTeams([]);
+      setPicks([]);
+      if (setLoading) setBusy("");
+      return;
+    }
+    const requestId = ++sessionLoadRequestRef.current;
     if (setLoading) setBusy("Loading session...");
     const [sessionResult, teamsResult, picksResult] = await Promise.all([
-      supabase.from("draft_sessions").select("*").eq("id", sessionId).maybeSingle(),
+      supabase.from("draft_sessions").select("*").eq("id", sessionId).eq("league_id", currentLeagueId).maybeSingle(),
       supabase.from("draft_teams").select("*").eq("session_id", sessionId).order("created_at", { ascending: true }),
       supabase.from("draft_picks").select("*").eq("session_id", sessionId).order("pick_number", { ascending: true }),
     ]);
+    if (requestId !== sessionLoadRequestRef.current) return;
     if (sessionResult.error || teamsResult.error || picksResult.error) {
       console.error(sessionResult.error, teamsResult.error, picksResult.error);
       setStatusMessage("Could not load the selected draft session.");
@@ -2031,6 +2099,14 @@ export default function Page() {
       return;
     }
     const nextSession = (sessionResult.data as DraftSession | null) ?? null;
+    if (!nextSession) {
+      setCurrentSession(null);
+      setTeams([]);
+      setPicks([]);
+      setStatusMessage("That tournament is not available in the selected league.");
+      setBusy("");
+      return;
+    }
     setCurrentSession(nextSession);
     setTeams((teamsResult.data as DraftTeam[]) ?? []);
     setPicks((picksResult.data as DraftPick[]) ?? []);
@@ -2049,7 +2125,7 @@ export default function Page() {
     setEvents([]);
     setNewSessionEventId("");
     try {
-      const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${season}`);
       const payload = await readJsonResponse<EventsResponse>(response);
       if (!payload?.ok || !payload.events) throw new Error(payload?.error ?? "Data Golf did not return events.");
       if (requestId !== eventLoadRequestRef.current) return;
@@ -2074,7 +2150,7 @@ export default function Page() {
       const toursToCheck = currentSession.event_tour ? [currentSession.event_tour] : TOUR_OPTIONS.map((tour) => tour.id);
       for (const tourId of toursToCheck) {
         const seasonQuery = resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession);
-        const response = await fetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`, LIVE_DATA_FETCH_OPTIONS);
+        const response = await authenticatedApiFetch(`/api/data-golf?action=app-events&tour=${encodeURIComponent(tourId)}&season=${seasonQuery}`);
         const payload = await readJsonResponse<EventsResponse>(response);
         if (!payload?.ok || !payload.events) continue;
         const eventDetails = payload.events.find((event) => event.id === currentSession.event_id) ?? null;
@@ -2092,7 +2168,7 @@ export default function Page() {
 
   async function loadOdds(eventName: string, season = CURRENT_GOLF_SEASON) {
     try {
-      const response = await fetch(`/api/data-golf?action=app-odds&tour=${encodeURIComponent(currentSession?.event_tour ?? newDraftTour)}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+      const response = await authenticatedApiFetch(`/api/data-golf?action=app-odds&tour=${encodeURIComponent(currentSession?.event_tour ?? newDraftTour)}&market=win&odds_format=american`);
       const payload = await readJsonResponse<OddsResponse>(response);
       if (!payload?.ok || !payload.odds) {
         setOddsByPlayer({});
@@ -2108,11 +2184,11 @@ export default function Page() {
   async function updateSession(patch: Partial<DraftSession>, message: string) {
     if (!currentSession) return false;
     const supportedPatch = { ...patch };
-    let { error } = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id);
-    for (const optionalColumn of ["event_tour", "event_season", "counts_for_season"] as const) {
+    let { error } = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id).eq("league_id", currentLeagueId);
+    for (const optionalColumn of ["event_tour", "event_season", "counts_for_season", "tournament_id"] as const) {
       if (!error || !(optionalColumn in supportedPatch) || !isMissingColumnError(error, optionalColumn)) continue;
       delete supportedPatch[optionalColumn];
-      const fallbackResult = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id);
+      const fallbackResult = await supabase.from("draft_sessions").update(supportedPatch).eq("id", currentSession.id).eq("league_id", currentLeagueId);
       error = fallbackResult.error;
     }
     if (error) {
@@ -2419,10 +2495,10 @@ export default function Page() {
 
   async function fetchDataGolfFieldInput(eventId: string, tourId: string | null | undefined, season = CURRENT_GOLF_SEASON) {
     const tourQuery = tourId ? `&tour=${encodeURIComponent(tourId)}` : "";
-    let response = await fetch(`/api/data-golf?action=app-field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+    let response = await authenticatedApiFetch(`/api/data-golf?action=app-field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
     let payload = await readJsonResponse<FieldResponse>(response);
     if (!payload?.ok && !eventId.startsWith("dg:")) {
-      response = await fetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`, LIVE_DATA_FETCH_OPTIONS);
+      response = await authenticatedApiFetch(`/api/espn-golf?action=field&eventId=${encodeURIComponent(eventId)}${tourQuery}&season=${season}`);
       payload = await readJsonResponse<FieldResponse>(response);
     }
     if (!payload?.ok || !payload.players?.length) throw new Error(payload?.error || "Data Golf did not return any golfers for that event yet.");
@@ -2432,7 +2508,7 @@ export default function Page() {
     let oddsSource = payload.oddsSource ?? "";
     if (!Object.keys(odds).length && payload.eventName) {
       try {
-        const oddsResponse = await fetch(`/api/data-golf?action=app-odds${tourQuery}&market=win&odds_format=american`, LIVE_DATA_FETCH_OPTIONS);
+        const oddsResponse = await authenticatedApiFetch(`/api/data-golf?action=app-odds${tourQuery}&market=win&odds_format=american`);
         const oddsPayload = await readJsonResponse<OddsResponse>(oddsResponse);
         odds = oddsPayload?.ok && oddsPayload.odds ? oddsPayload.odds : {};
         oddsSource = oddsPayload?.source ?? "";
@@ -2477,17 +2553,19 @@ export default function Page() {
       console.error(error);
       fieldImportMessage = error instanceof Error && error.message ? ` Data Golf field was not imported: ${error.message}` : " Data Golf field was not imported yet.";
     }
-    const sessionPayload = { league_id: currentLeagueId, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
+    const sessionPayload = { league_id: currentLeagueId, tournament_id: event.catalogId ?? null, event_tour: newDraftTour, event_season: newDraftSeason, counts_for_season: newSessionCountsForSeason, name: trimmedName, event_id: event.id, event_name: event.name, player_input: playerInput, manual_leaderboard_input: manualLeaderboardWithEventSeason("", newDraftSeason, newSessionCountsForSeason), current_positions: {}, current_totals: {}, status: "setup", commissioner_id: user.id };
     let sessionInsert = await supabase.from("draft_sessions").insert([sessionPayload]).select("*").single();
     if (sessionInsert.error && (
       isMissingColumnError(sessionInsert.error, "event_tour")
       || isMissingColumnError(sessionInsert.error, "event_season")
       || isMissingColumnError(sessionInsert.error, "counts_for_season")
+      || isMissingColumnError(sessionInsert.error, "tournament_id")
     )) {
       const fallbackPayload: Record<string, unknown> = { ...sessionPayload };
       delete fallbackPayload.event_tour;
       delete fallbackPayload.event_season;
       delete fallbackPayload.counts_for_season;
+      delete fallbackPayload.tournament_id;
       sessionInsert = await supabase.from("draft_sessions").insert([fallbackPayload]).select("*").single();
     }
     if (sessionInsert.error || !sessionInsert.data) {
@@ -2664,10 +2742,10 @@ export default function Page() {
     setBusy("Pulling leaderboard...");
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await authenticatedApiFetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
       let payload = await readJsonResponse<LeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
-        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        response = await authenticatedApiFetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
         payload = await readJsonResponse<LeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.leaderboard) throw new Error(payload?.error ?? "Data Golf did not return leaderboard data.");
@@ -2706,10 +2784,10 @@ export default function Page() {
     setTournamentLeaderboardLoading(true);
     try {
       const tourQuery = currentSession.event_tour ? `&tour=${encodeURIComponent(currentSession.event_tour)}` : "";
-      let response = await fetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+      let response = await authenticatedApiFetch(`/api/data-golf?action=app-leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}&eventName=${encodeURIComponent(currentSession.event_name ?? currentSession.name)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
       let payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       if (!payload?.ok && !currentSession.event_id.startsWith("dg:")) {
-        response = await fetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`, LIVE_DATA_FETCH_OPTIONS);
+        response = await authenticatedApiFetch(`/api/espn-golf?action=leaderboard&eventId=${encodeURIComponent(currentSession.event_id)}${tourQuery}&season=${resolvedSessionSeasons[currentSession.id] ?? sessionEventSeason(currentSession)}`);
         payload = await readJsonResponse<TournamentLeaderboardResponse>(response);
       }
       if (!payload?.ok || !payload.rows) throw new Error(payload?.error ?? "Data Golf did not return tournament leaderboard rows.");
@@ -2744,33 +2822,22 @@ export default function Page() {
     const randomPool = shuffled(availablePlayers);
 
     setBusy("Random drafting...");
-    const generatedPicks: Omit<DraftPick, "id" | "created_at">[] = [];
-    for (let offset = 0; offset < remainingPicks; offset += 1) {
-      const overallIndex = picks.length + offset;
-      const roundNumber = Math.floor(overallIndex / assignedTeams.length) + 1;
-      const roundIndex = overallIndex % assignedTeams.length;
-      const team = roundNumber % 2 === 1 ? assignedTeams[roundIndex] : assignedTeams[assignedTeams.length - 1 - roundIndex];
-      const playerName = randomPool[offset];
-      generatedPicks.push({
-        session_id: currentSession.id,
-        team_id: team.id,
-        player_name: playerName,
-        player_key: normalizeName(playerName),
-        pick_number: overallIndex + 1,
-        round_number: roundNumber,
-      });
-    }
-
-    const { error } = await supabase.from("draft_picks").insert(generatedPicks);
+    const selectedPlayers = randomPool.slice(0, remainingPicks);
+    const { data: insertedCount, error } = await supabase.rpc("auto_draft_session", {
+      target_session_id: currentSession.id,
+      player_names: selectedPlayers,
+    });
     if (error) {
       console.error(error);
       setBusy("");
-      setStatusMessage("Could not complete the random draft.");
+      setStatusMessage(error.message || "Could not complete the random draft.");
       return;
     }
 
-    const completed = picks.length + generatedPicks.length >= totalPicks;
-    await updateSession({ status: completed ? "draft_complete" : "drafting" }, `Randomly drafted ${generatedPicks.length} golfers.`);
+    const completed = picks.length + Number(insertedCount ?? 0) >= totalPicks;
+    await loadSessions();
+    await loadSession(currentSession.id, false, false);
+    setStatusMessage(`Randomly drafted ${Number(insertedCount ?? 0)} golfers.`);
     if (completed) setActiveRoomTab("results");
     setPlayerFilter("");
     setHighlightedPlayerIndex(0);
@@ -2886,16 +2953,15 @@ export default function Page() {
     const playerKey = normalizeName(playerName);
     if (draftedKeys.has(playerKey)) return setStatusMessage(`${playerName} has already been drafted.`);
     setBusy("Saving pick...");
-    if (!picks.length && !currentSession.field_locked_at) {
-      const lockResult = await supabase.from("draft_sessions").update({ field_locked_at: new Date().toISOString() }).eq("id", currentSession.id);
-      if (lockResult.error) console.error(lockResult.error);
-    }
-    const insertResult = await supabase.from("draft_picks").insert([{ session_id: currentSession.id, team_id: currentTeamOnClock.id, player_name: playerName, player_key: playerKey, pick_number: picks.length + 1, round_number: currentRound }]);
+    const insertResult = await supabase.rpc("submit_draft_pick", {
+      target_session_id: currentSession.id,
+      target_player_name: playerName,
+    });
     if (insertResult.error) {
       console.error(insertResult.error);
       setBusy("");
       await loadSession(currentSession.id, false, false);
-      return setStatusMessage("Could not save that pick. Refresh if someone else drafted at the same time.");
+      return setStatusMessage(insertResult.error.message || "Could not save that pick. Refresh if someone else drafted at the same time.");
     }
     const isLastPick = picks.length + 1 >= totalPicks;
     setStatusMessage(`${currentTeamOnClock.name} drafted ${playerName}.`);
@@ -2942,13 +3008,15 @@ export default function Page() {
     setBusy("Undoing pick...");
     const lastPick = picks[picks.length - 1];
     const lastTeam = teams.find((team) => team.id === lastPick.team_id);
-    const { error } = await supabase.from("draft_picks").delete().eq("id", lastPick.id);
+    const { error } = await supabase.rpc("undo_last_draft_pick", { target_session_id: currentSession.id });
     if (error) {
       console.error(error);
       setBusy("");
-      return setStatusMessage("Could not undo the last pick.");
+      return setStatusMessage(error.message || "Could not undo the last pick.");
     }
-    await updateSession({ status: "drafting" }, `Removed ${lastPick.player_name} from ${lastTeam?.name ?? "the draft board"}.`);
+    await loadSessions();
+    await loadSession(currentSession.id, false, false);
+    setStatusMessage(`Removed ${lastPick.player_name} from ${lastTeam?.name ?? "the draft board"}.`);
     setBusy("");
   }
 
@@ -3478,7 +3546,7 @@ export default function Page() {
                           <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                               <h4 className="m-0 font-[Georgia] text-lg">Setup Status</h4>
-                              <div className="mt-1 text-sm text-[#617061]">{setupReady ? "The required tournament details are in place." : "Complete the items marked Needs attention before drafting."}</div>
+                              <div className="mt-1 text-sm text-[#617061]">{setupReady ? "The required tournament details are in place." : fieldPending ? "The tournament is linked, but its player field has not been published yet." : "Complete the items marked Needs attention before drafting."}</div>
                             </div>
                             <span className="text-sm font-semibold text-[#1a5c3a]">{[setupHasEvent, setupHasTeams, setupHasField].filter(Boolean).length}/3 required</span>
                           </div>
@@ -3531,6 +3599,7 @@ export default function Page() {
                                 void updateSession(
                                   {
                                     event_id: event.target.value || null,
+                                    tournament_id: selectedEvent?.catalogId ?? null,
                                     event_name: selectedEvent?.name ?? null,
                                     event_tour: newDraftTour,
                                     event_season: season,
@@ -3607,6 +3676,12 @@ export default function Page() {
                             <div><span className="block text-xs">Odds available</span><strong className="text-[#1f2a1d]">{Object.keys(displayOddsByPlayer).length}</strong></div>
                             <div><span className="block text-xs">Field status</span><strong className="text-[#1f2a1d]">{picks.length || currentSession.field_locked_at ? "Locked" : "Editable"}</strong></div>
                           </div>
+                          {fieldPending ? (
+                            <div className="rounded-xl border border-[#c28a24]/30 bg-[#fff6d9] px-4 py-3 text-sm text-[#6a4b12]">
+                              <strong className="block text-[#4f390e]">Field not published yet</strong>
+                              <span>Data Golf and ESPN have not released the player list for {currentSession.event_name ?? currentSession.name}{currentSessionDisplayEvent?.dateLabel ? ` (${currentSessionDisplayEvent.dateLabel})` : ""}. Drafting is disabled until the field becomes available. This page will try again automatically, or a commissioner can use Refresh Field &amp; Odds.</span>
+                            </div>
+                          ) : null}
                           <div className="flex flex-wrap gap-3">
                             <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-4 py-2.5 text-[#1a5c3a] disabled:opacity-50" disabled={!!picks.length} onClick={importFieldFromDataGolf}>Refresh Field & Odds</button>
                             {currentSession.odds_source ? <a className="self-center text-sm text-[#1a5c3a] underline" href={currentSession.odds_source} target="_blank" rel="noreferrer">View odds source</a> : null}
@@ -3764,6 +3839,8 @@ export default function Page() {
                             <div className="font-semibold leading-tight">
                               {editingPick
                                 ? `Replacing ${editingPick.playerName} on ${editingPick.teamName}. Pick a replacement below.`
+                                : fieldPending
+                                  ? "Field not published yet. Drafting will unlock when the tournament player list becomes available."
                                 : !validDraftOrder
                                   ? "The draft order needs to be repaired before picks can be made."
                                   : draftComplete
@@ -3779,7 +3856,7 @@ export default function Page() {
                           </div>
                           <div className="flex flex-wrap gap-2 lg:justify-end">
                             {!validDraftOrder && assignedTeams.length ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={normalizeDraftOrder}>Repair Order</button> : null}
-                            {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d]" onClick={autoDraftRandomly}>Random Draft</button> : null}
+                            {!draftComplete && validDraftOrder && canManageLeague ? <button className="rounded-full bg-[#f6d77a] px-3 py-1.5 text-sm font-semibold text-[#1f2a1d] disabled:cursor-not-allowed disabled:opacity-50" disabled={fieldPending} onClick={autoDraftRandomly}>Random Draft</button> : null}
                             {canManageLeague ? <button className="rounded-full border border-[#1a5c3a]/20 bg-white px-3 py-1.5 text-sm text-[#1a5c3a]" onClick={undoLastPick}>Undo Pick</button> : null}
                             {editingPick && canManageLeague ? <button className="rounded-full border border-[#9d4b2f]/20 bg-white px-3 py-1.5 text-sm text-[#9d4b2f]" onClick={() => setEditingPick(null)}>Cancel Swap</button> : null}
                           </div>
@@ -3790,9 +3867,9 @@ export default function Page() {
                             <h3 className="m-0 font-[Georgia] text-lg">Available Golfers</h3>
                             <span className="rounded-full bg-[#f2eadf] px-2.5 py-0.5 text-xs text-[#617061]">{availablePlayers.length} match{availablePlayers.length === 1 ? "" : "es"}</span>
                           </div>
-                          <input className="rounded-xl border border-black/15 bg-white px-3 py-2" value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder="Search available golfers" />
+                          <input className="rounded-xl border border-black/15 bg-white px-3 py-2 disabled:cursor-not-allowed disabled:bg-[#f2eadf]" disabled={fieldPending} value={playerFilter} onChange={(event) => { setPlayerFilter(event.target.value); setHighlightedPlayerIndex(0); }} onKeyDown={handlePlayerSearchKeyDown} placeholder={fieldPending ? "Waiting for published field" : "Search available golfers"} />
                           <div className="grid max-h-[450px] content-start gap-1 overflow-y-auto overflow-x-hidden rounded-xl border border-black/10 bg-[#f7f2e9]/70 p-1.5">
-                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
+                            {!availablePlayers.length ? <div className="rounded-2xl border border-black/10 bg-white/70 p-4 text-[#617061]">{allPlayers.length ? "No available golfers match your search." : fieldPending ? `Field not published yet for ${currentSession.event_name ?? currentSession.name}. Drafting is disabled until the tournament player list is available.` : "The player field is still importing or has not been refreshed yet. Commissioners can use Setup to refresh the field and odds."}</div> : availablePlayers.map((player) => {
                               const oddsLabel = playerOddsLabel(player);
                               return (
                                 <div key={player} className={`grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-xl border px-2.5 py-1.5 ${availablePlayers[highlightedPlayerIndex] === player ? "border-[#1a5c3a]/50 bg-[#e0eee4]" : "border-black/10 bg-white/90"}`} onMouseEnter={() => setHighlightedPlayerIndex(availablePlayers.indexOf(player))}>

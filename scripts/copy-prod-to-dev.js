@@ -35,6 +35,11 @@ async function deleteAll(client, table) {
   if (error) throw new Error(`Could not clear ${table}: ${error.message}`);
 }
 
+async function deleteAllBy(client, table, key) {
+  const { error } = await client.from(table).delete().not(key, "is", null);
+  if (error) throw new Error(`Could not clear ${table}: ${error.message}`);
+}
+
 async function insertRows(client, table, rows) {
   if (!rows.length) return;
   for (const rowsChunk of chunk(rows)) {
@@ -68,18 +73,22 @@ async function main() {
 
   const devUser = await findDevUser(dev, process.env.DEV_USER_EMAIL);
 
-  const [prodLeagues, prodSessions, prodTeams, prodPicks] = await Promise.all([
+  const [prodLeagues, prodCatalog, prodSnapshots, prodSessions, prodTeams, prodPicks] = await Promise.all([
     selectAll(prod, "leagues"),
+    selectAll(prod, "tournament_catalog"),
+    selectAll(prod, "tournament_snapshots", "updated_at"),
     selectAll(prod, "draft_sessions"),
     selectAll(prod, "draft_teams"),
     selectAll(prod, "draft_picks"),
   ]);
 
-  console.log(`Read ${prodLeagues.length} leagues, ${prodSessions.length} sessions, ${prodTeams.length} teams, ${prodPicks.length} picks from prod.`);
+  console.log(`Read ${prodLeagues.length} leagues, ${prodCatalog.length} tournaments, ${prodSnapshots.length} snapshots, ${prodSessions.length} sessions, ${prodTeams.length} teams, ${prodPicks.length} picks from prod.`);
 
   await deleteAll(dev, "draft_picks");
   await deleteAll(dev, "draft_teams");
   await deleteAll(dev, "draft_sessions");
+  await deleteAllBy(dev, "tournament_snapshots", "tournament_id");
+  await deleteAll(dev, "tournament_catalog");
   await deleteAll(dev, "league_memberships");
   await deleteAll(dev, "leagues");
 
@@ -116,6 +125,9 @@ async function main() {
     claimed_team_name: devProfile.team_name,
   }));
   await insertRows(dev, "league_memberships", memberships);
+
+  await insertRows(dev, "tournament_catalog", prodCatalog);
+  await insertRows(dev, "tournament_snapshots", prodSnapshots);
 
   const sessions = prodSessions.map((session) => ({
     ...session,

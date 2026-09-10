@@ -1,5 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { internalProviderHeaders } from "@/lib/provider-api-auth";
+import { canonicalProviderOrigin } from "@/lib/provider-api-policy";
+import {
+  eventNamesMatch,
+  leaderboardSessionStatus,
+  recordsMatch,
+  rowsHavePlayersOnCourse,
+  totalsHavePendingTeeTimes,
+  totalsHavePlayersOnCourse,
+  type TournamentLeaderboardRow,
+} from "@/lib/leaderboard-lifecycle";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -15,14 +26,6 @@ type DraftSessionForRefresh = {
   current_positions: Record<string, number | null> | null;
   current_totals: Record<string, string | null> | null;
   updated_at: string | null;
-};
-
-type TournamentLeaderboardRow = {
-  name: string;
-  position: number | null;
-  positionLabel: string;
-  total: string | null;
-  thru: string | null;
 };
 
 type EspnLeaderboardResponse = {
@@ -51,29 +54,6 @@ function isAuthorizedCronRequest(request: NextRequest) {
   return !secret && userAgent.includes("vercel-cron/1.0");
 }
 
-function storedThruFromTotal(value: string | null | undefined) {
-  if (!value?.includes("||")) return null;
-  const [, thru] = value.split("||");
-  return thru?.trim() || null;
-}
-
-function isLiveThru(thru: string | null | undefined) {
-  const normalized = String(thru ?? "").trim().toUpperCase();
-  return /^THRU\s+\d+$/.test(normalized) || normalized.startsWith("PLAYOFF");
-}
-
-function rowsHavePlayersOnCourse(rows: TournamentLeaderboardRow[] | undefined) {
-  return (rows ?? []).some((row) => isLiveThru(row.thru));
-}
-
-function totalsHavePlayersOnCourse(totals: Record<string, string | null> | null | undefined) {
-  return Object.values(totals ?? {}).some((value) => isLiveThru(storedThruFromTotal(value)));
-}
-
-function totalsHavePendingTeeTimes(totals: Record<string, string | null> | null | undefined) {
-  return Object.values(totals ?? {}).some((value) => String(storedThruFromTotal(value) ?? "").startsWith("Tee "));
-}
-
 function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number) {
   const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
   const age = now - updatedAt;
@@ -83,26 +63,6 @@ function sessionNeedsHourlyRefresh(session: DraftSessionForRefresh, now: number)
 function sessionWasRecentlyActive(session: DraftSessionForRefresh, now: number) {
   const updatedAt = session.updated_at ? new Date(session.updated_at).getTime() : 0;
   return Number.isFinite(updatedAt) && updatedAt > 0 && now - updatedAt <= RECENT_SESSION_MS;
-}
-
-function normalizedEventName(value: string | null | undefined) {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/\bpresented by\b.*$/i, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
-function eventNamesMatch(expected: string | null | undefined, actual: string | null | undefined) {
-  const left = normalizedEventName(expected);
-  const right = normalizedEventName(actual);
-  return Boolean(left && right && (left === right || left.includes(right) || right.includes(left)));
-}
-
-function recordsMatch<T>(left: Record<string, T> | null | undefined, right: Record<string, T> | null | undefined) {
-  const leftEntries = Object.entries(left ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  const rightEntries = Object.entries(right ?? {}).sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
 }
 
 async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh) {
@@ -117,7 +77,7 @@ async function fetchLeaderboard(origin: string, session: DraftSessionForRefresh)
   if (isDataGolfEvent && session.event_name) params.set("eventName", session.event_name);
 
   const route = isDataGolfEvent ? "data-golf" : "espn-golf";
-  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store" });
+  const response = await fetch(`${origin}/api/${route}?${params.toString()}`, { cache: "no-store", headers: internalProviderHeaders() });
   const payload = (await response.json()) as EspnLeaderboardResponse;
   if (!payload.ok || !payload.leaderboard) {
     throw new Error(payload.error || "Leaderboard response did not include scoring data.");
@@ -134,6 +94,10 @@ export async function GET(request: NextRequest) {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!supabaseUrl || !serviceRoleKey) {
     return NextResponse.json({ ok: false, error: "Missing Supabase server refresh configuration." }, { status: 503 });
+  }
+  const providerOrigin = canonicalProviderOrigin(process.env.APP_ORIGIN, process.env.NODE_ENV === "production");
+  if (!providerOrigin || !process.env.INTERNAL_PROVIDER_API_SECRET) {
+    return NextResponse.json({ ok: false, error: "Missing or invalid internal provider refresh configuration." }, { status: 503 });
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
@@ -186,7 +150,7 @@ export async function GET(request: NextRequest) {
       const requestKey = [session.event_id, session.event_tour, session.event_season, session.event_name].join("|");
       let leaderboardRequest = leaderboardRequests.get(requestKey);
       if (!leaderboardRequest) {
-        leaderboardRequest = fetchLeaderboard(request.nextUrl.origin, session);
+        leaderboardRequest = fetchLeaderboard(providerOrigin, session);
         leaderboardRequests.set(requestKey, leaderboardRequest);
       }
       const payload = await leaderboardRequest;
@@ -195,7 +159,7 @@ export async function GET(request: NextRequest) {
       }
       const hasPlayersOnCourse = rowsHavePlayersOnCourse(payload.rows);
       const hasNoSavedScores = Object.keys(session.current_positions ?? {}).length === 0;
-      const nextStatus = payload.finalized ? "finalized" : payload.notStarted ? "draft_complete" : "scored";
+      const nextStatus = leaderboardSessionStatus(payload);
 
       if (!hasPlayersOnCourse && !hadPlayersOnCourse && !needsHourlyRefresh && !hasNoSavedScores) {
         results.push({ sessionId: session.id, refreshed: false, reason: "throttled" });

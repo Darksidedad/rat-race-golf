@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "test": "node --experimental-strip-types --test --test-isolation=none tests/*.test.ts",
     "start": "next start",
     "copy:prod-to-dev": "node scripts/copy-prod-to-dev.js",
     "lint": "eslint"

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { authorizeProviderApi, privateProviderResponse } from "@/lib/provider-api-auth";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -982,7 +983,9 @@ async function fetchScoreboardForEvent(eventId: string | null, rawTour: string |
   };
 }
 
-export async function GET(req: NextRequest) {
+async function handleGet(req: NextRequest) {
+  const access = await authorizeProviderApi(req, "espn-golf", 240);
+  if (!access.ok) return access.response;
   const action = req.nextUrl.searchParams.get("action");
   const eventId = req.nextUrl.searchParams.get("eventId");
   const eventNameParam = req.nextUrl.searchParams.get("eventName");
@@ -1125,5 +1128,9 @@ export async function GET(req: NextRequest) {
       error: "Could not connect to the live golf feed.",
     });
   }
+}
+
+export async function GET(req: NextRequest) {
+  return privateProviderResponse(await handleGet(req));
 }
 
