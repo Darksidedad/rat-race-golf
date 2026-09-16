@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { authorizeProviderApi, consumeProviderQuota, privateProviderResponse } from "@/lib/provider-api-auth";
-import { historicalResultsCanFinalize, roundTotalToPar, type HistoricalRound } from "@/lib/completed-results";
+import { historicalPlayerNameKey, historicalResultsCanFinalize, roundTotalToPar, type HistoricalRound } from "@/lib/completed-results";
 
 const DATA_GOLF_BASE_URL = "https://feeds.datagolf.com";
 
@@ -618,14 +618,14 @@ async function completedHistoricalLeaderboard(request: NextRequest, requestedEve
   const roundResultsByName = new Map((historicalRounds.data?.scores ?? []).map((player) => {
     const rounds = [player.round_1, player.round_2, player.round_3, player.round_4];
     const total = roundTotalToPar(rounds);
-    return [formatDataGolfPlayerName(player.player_name), { total, roundCount: rounds.filter(Boolean).length }] as const;
+    return [historicalPlayerNameKey(player.player_name), { total, roundCount: rounds.filter(Boolean).length }] as const;
   }));
   const rows = (historical.data?.event_stats ?? []).map((player) => {
     const name = formatDataGolfPlayerName(player.player_name);
     const finish = String(player.fin_text ?? "").trim().toUpperCase();
     const status = ["CUT", "WD", "DQ"].includes(finish) ? finish : null;
     const position = status ? null : positionNumber(finish);
-    const roundResult = roundResultsByName.get(name);
+    const roundResult = roundResultsByName.get(historicalPlayerNameKey(player.player_name));
     const hasRequiredRounds = position ? roundResult?.roundCount === 4 : status === "CUT" ? (roundResult?.roundCount ?? 0) >= 2 : true;
     const total = hasRequiredRounds && roundResult?.total !== null && roundResult?.total !== undefined ? scoreLabel(roundResult.total) : null;
     return { name, position, positionLabel: finish, total, thru: status ?? (position ? "F" : null) };

@@ -22,6 +22,13 @@ export type HistoricalRound = {
   score?: number | string | null;
 };
 
+export function historicalPlayerNameKey(value: string | null | undefined) {
+  const name = String(value ?? "").trim();
+  const match = name.match(/^([^,]+),\s*(.+)$/);
+  const formatted = match ? `${match[2]} ${match[1]}` : name;
+  return formatted.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 export function roundTotalToPar(rounds: Array<HistoricalRound | null | undefined>) {
   const played = rounds.filter((round): round is HistoricalRound => Boolean(round));
   if (!played.length) return null;
